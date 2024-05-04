@@ -125,7 +125,8 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 // Shared memory allocation functions
 //
 // smalloc asks for a little extra memory so it can prepend a size,
-// which is used by sfree when later being freed
+// which is used by sfree when later being freed. scalloc is a wrapper
+// around smalloc which is for allocating an array.
 // *********************************************************************
 
 void* smalloc(size_t size)
@@ -197,11 +198,11 @@ struct result
 	long mismatch;
 };
 
-struct result* results = 0;
+struct result* results = NULL;
 
 void cleanup()
 {
-	if (results)
+	if (results != NULL)
 	{
 		sfree(results);
 	}
@@ -210,7 +211,7 @@ void cleanup()
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-int process(int id, struct arguments* args)
+int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 {
 	// Initialize success counter in shared memory
 	results[id].total = 0;
@@ -218,7 +219,7 @@ int process(int id, struct arguments* args)
 	results[id].timeout = 0;
 	results[id].mismatch = 0;
 	
-	// Prepare request
+	// Prepare request vector which concatenates CRLF onto the end of the supplied string
 	char* requestEnd = "\r\n";
 	
 	struct iovec request[] =
@@ -235,16 +236,6 @@ int process(int id, struct arguments* args)
 	
 	ssize_t requestSize = request[0].iov_len + request[1].iov_len;
 	
-	// Receive buffer
-	size_t rxBufferSize = 1024*1024;
-	char* rxBuffer = malloc(rxBufferSize);
-	
-	if (rxBuffer == NULL)
-	{
-		fprintf(stderr, "Error: Worker #%i cannot allocate receive buffer: %s\n", id, strerror(errno));
-		return -1;
-	}
-	
 	// Set up socket address
 	struct sockaddr_in addr = 
 	{
@@ -258,7 +249,7 @@ int process(int id, struct arguments* args)
 	
 	inet_pton(AF_INET, args->address, &addr.sin_addr.s_addr);
 	
-	// Set up timerfd
+	// Set up timerfd, which is used to figure out when the test needs to stop
 	struct itimerspec timer =
 	{
 		.it_interval =
@@ -367,6 +358,7 @@ int process(int id, struct arguments* args)
 					return -1;
 				}
 				
+				// Now we want to listen for a reply
 				poll_list[1].events = POLLIN;
 			}
 			else if (poll_list[1].revents & POLLIN) // Reply waiting
@@ -376,7 +368,6 @@ int process(int id, struct arguments* args)
 				{
 					ssize_t n = read(sockfd, rxBuffer, rxBufferSize);
 					
-					//
 					if (n < 0)
 					{
 						if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -391,6 +382,25 @@ int process(int id, struct arguments* args)
 					}
 					else if (n == 0)
 					{
+						// End of file means we score the result and break out to do it again
+						if (args->size > 0 && received != args->size)
+						{
+							// Warn the first time we get a size mismatch
+							if (results[id].mismatch == 0)
+							{
+								fprintf(stderr, "Warning: Worker #%i size mismatch\n", id);
+							}
+							
+							// Score a size mismatch
+							results[id].mismatch++;
+						}
+						else
+						{
+							// Score a successful result
+							results[id].successful++;
+						}
+						
+						// This has no relevance to poll itself, it's just used as a convenient way to pass on that we need to break a second time thanks to nested while loops
 						poll_list[1].events = 0;
 						
 						break;
@@ -399,24 +409,9 @@ int process(int id, struct arguments* args)
 					received += n;
 				}
 				
+				// Here's the second break
 				if (poll_list[1].events == 0)
 				{
-					if (args->size > 0 && received != args->size)
-					{
-						if (results[id].mismatch == 0)
-						{
-							fprintf(stderr, "Warning: Worker #%i size mismatch\n", id);
-						}
-						
-						// Score a size mismatch
-						results[id].mismatch++;
-					}
-					else
-					{
-						// Score a successful result
-						results[id].successful++;
-					}
-					
 					break;
 				}
 			}
@@ -427,8 +422,6 @@ int process(int id, struct arguments* args)
 		// If the timerfd ticked, we're done
 		if (poll_list[0].fd < 0)
 		{
-			free(rxBuffer);
-			
 			return 0;
 		}
 	}
@@ -483,7 +476,18 @@ int main(int argc, char* argv[])
 	
 		if (pid == 0) // Worker
 		{
-			int retval = process(i, &args);
+			size_t rxBufferSize = 1024*1024;
+			void* rxBuffer = malloc(rxBufferSize);
+			
+			if (rxBuffer == NULL)
+			{
+				fprintf(stderr, "Error: Worker #%i cannot allocate receive buffer: %s\n", i, strerror(errno));
+				exit(EXIT_FAILURE);
+			}
+			
+			int retval = process(i, &args, rxBuffer, rxBufferSize);
+			
+			free(rxBuffer);
 			
 			if (retval < 0)
 			{
