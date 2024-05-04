@@ -242,7 +242,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// Figure out the filename
 			if (filenameSize == 0)
 			{
-				filename = (char*)server->params->indexfile;
+				filename = server->params->indexfile;
 			}
 			else
 			{
@@ -366,7 +366,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// Replace the fork's stdout FD with the socket FD
 					if (dup2(fd, STDOUT_FILENO) < 0)
 					{
-						fprintf(stderr, "%i - Error: Cannot duplicate socket FD: %s\n", getpid(), strerror(errno));
+						fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket FD over stdout: %s\n", getpid(), strerror(errno));
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 						exit(EXIT_FAILURE);
 					}
@@ -389,7 +389,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					fexecve(dup(client->file), argv, envp);
 
 					// This is only reached if there was a problem with fexecve
-					fprintf(stderr, "%i - Error: Cannot execute file: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
 					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 					exit(EXIT_FAILURE);
 				}

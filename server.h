@@ -10,8 +10,8 @@ struct server_params
 	unsigned int timeout;
 	
 	// Paths and files
-	const char* directory;
-	const char* indexfile;
+	char* directory;
+	char* indexfile;
 };
 
 int doserver(struct server_params* params);

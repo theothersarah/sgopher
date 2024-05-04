@@ -255,6 +255,29 @@ int main(int argc, char* argv[])
 	params.indexfile = args.indexfile;
 	params.timeout = args.timeout;
 	
+	// Where we're going we only need stderr
+	int devnull = open("/dev/null", O_RDONLY);
+	
+	if (devnull < 0)
+	{
+		fprintf(stderr, "S - Error: Cannot open up /dev/null: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	if (dup2(devnull, STDIN_FILENO) < 0)
+	{
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdin: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	if (dup2(devnull, STDOUT_FILENO) < 0)
+	{
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdout: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	close(devnull);
+	
 	// Spawn worker processes
 	struct supervisor supervisor;
 	pid_t pid;
@@ -287,15 +310,6 @@ int main(int argc, char* argv[])
 	// Tasks for each process
 	if (pid == 0) // Worker task
 	{
-		// There's no reason for the child to have stdin and stdout open, but stderr is needed
-		int devnull = open("/dev/null", O_RDONLY);
-		
-		dup2(devnull, STDIN_FILENO);
-		dup2(devnull, STDOUT_FILENO);
-		
-		close(devnull);
-		
-		//
 		int retval = doserver(&params);
 		
 		if (retval < 0)
