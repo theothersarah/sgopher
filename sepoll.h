@@ -14,7 +14,7 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 int sepoll_mod(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2);
 int sepoll_mod_events(struct sepoll_loop* loop, int fd, unsigned int events);
 int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2);
-int sepoll_remove(struct sepoll_loop* loop, int fd, int close);
+int sepoll_remove(struct sepoll_loop* loop, int fd, _Bool close);
 
 //
 void sepoll_queue_close(struct sepoll_loop* loop, int fd);

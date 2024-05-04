@@ -41,7 +41,10 @@
 enum arg_keys
 {
 	KEY_DIRECTORY = 'd',
+	KEY_INDEXFILE = 'i',
+	KEY_MAXCLIENTS = 'm',
 	KEY_PORT = 'p',
+	KEY_TIMEOUT = 't',
 	KEY_WORKERS = 'w'
 };
 
@@ -49,16 +52,22 @@ enum arg_keys
 struct arguments
 {
 	char* directory;
+	char* indexfile;
+	unsigned int maxClients;
 	unsigned short port;
-	int numWorkers;
+	unsigned int timeout;
+	unsigned int numWorkers;
 };
 
 // options vector
 static struct argp_option argp_options[] =
 {
-	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from. Defaults to "},
-	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port. Defaults to 70."},
-	{"workers",		KEY_WORKERS,	"NUMBER",	0,	"Number of worker processes. Defaults to 4. Setting to 1 results in no forking."},
+	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from. Defaults to ./gopherroot"},
+	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory. Defaults to gophermap"},
+	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process. Defaults to 4096"},
+	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port. Defaults to 70"},
+	{"timeout",		KEY_TIMEOUT,	"NUMBER",	0,	"Time in seconds before booting inactive client. Defaults to 10"},
+	{"workers",		KEY_WORKERS,	"NUMBER",	0,	"Number of worker processes. Defaults to 1"},
 	{0}
 };
 
@@ -79,11 +88,20 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 	case KEY_DIRECTORY:
 		args->directory = arg;
 		break;
+	case KEY_INDEXFILE:
+		args->indexfile = arg;
+		break;
+	case KEY_MAXCLIENTS:
+		sscanf(arg, "%u", &args->maxClients);
+		break;
 	case KEY_PORT:
 		sscanf(arg, "%hu", &args->port);
 		break;
+	case KEY_TIMEOUT:
+		sscanf(arg, "%u", &args->timeout);
+		break;
 	case KEY_WORKERS:
-		sscanf(arg, "%i", &args->numWorkers);
+		sscanf(arg, "%u", &args->numWorkers);
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -93,14 +111,14 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 }
 
 // *********************************************************************
-//
+// Server state definitions
 // *********************************************************************
 
 #define MAX_WORKERS 256
 
 struct worker
 {
-	int number;
+	unsigned int number;
 	pid_t pid;
 	int pidfd;
 };
@@ -108,12 +126,17 @@ struct worker
 struct supervisor
 {
 	struct worker workers[MAX_WORKERS];
-	int numWorkers;
-	int activeWorkers;
+	unsigned int numWorkers;
+	unsigned int activeWorkers;
 	int sigfd;
 	struct sepoll_loop* loop;
 };
 
+// *********************************************************************
+// Server event handlers
+// *********************************************************************
+
+// signalfd event handler
 static void sigfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
 	struct supervisor* supervisor = userdata1;
@@ -138,7 +161,7 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 		switch (siginfo.ssi_signo)
 		{
 		case SIGTERM:
-			for (int i = 0; i < supervisor->numWorkers; i++)
+			for (unsigned int i = 0; i < supervisor->numWorkers; i++)
 			{
 				if (supervisor->workers[i].pid >= 0)
 				{
@@ -159,6 +182,7 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 	}
 }
 
+// pidfd event handler
 static void pidfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
 	struct supervisor* supervisor = userdata1;
@@ -177,8 +201,6 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 
 	sepoll_remove(supervisor->loop, fd, 1);
 	
-	//close(fd);
-	
 	worker->pidfd = -1;
 	
 	supervisor->activeWorkers--;
@@ -190,7 +212,7 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 }
 
 // *********************************************************************
-//
+// Main
 // *********************************************************************
 int main(int argc, char* argv[])
 {
@@ -199,46 +221,45 @@ int main(int argc, char* argv[])
 	
 	// Default argument values
 	struct arguments args;
-	args.directory = ".";
+	args.directory = "./gopherroot";
+	args.indexfile = "gophermap";
+	args.maxClients = 4096;
 	args.port = 70;
-	args.numWorkers = 4;
+	args.timeout = 10;
+	args.numWorkers = 1;
 
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
 	
-	//
-	if (args.numWorkers < 1)
-	{
-		fprintf(stderr, "S - Invalid number of worker processes - must be at least 1\n");
-		exit(EXIT_FAILURE);
-	}
-	
+	// Check arguments
 	if (args.numWorkers > MAX_WORKERS)
 	{
-		fprintf(stderr, "S - Invalid number of worker processes - must be no greater than %i\n", MAX_WORKERS);
+		fprintf(stderr, "S - Invalid number of worker processes - must be no greater than %u\n", MAX_WORKERS);
 		exit(EXIT_FAILURE);
 	}
 	
-	fprintf(stderr, "S - Spawning %i workers\n", args.numWorkers);
-	
-	//
+	// Report arguments
+	fprintf(stderr, "S - Serving files from %s\n", args.directory);
+	fprintf(stderr, "S - Index filename is %s\n", args.indexfile);
+	fprintf(stderr, "S - Maximum number of clients is %u\n", args.maxClients);
 	fprintf(stderr, "S - Listening on port %hu\n", args.port);
+	fprintf(stderr, "S - Timeout is %u seconds\n", args.timeout);
+	fprintf(stderr, "S - Spawning %u workers\n", args.numWorkers);
 	
-	//
+	// Copy arguments to server parameters
+	// Why do it like this? Just in case they are parsed from a configuration file in the future instead of the command line
 	struct server_params params;
 	params.directory = args.directory;
 	params.port = args.port;
-	params.maxClients = 4096;
-	params.indexFile = "index";
-	params.timeout = 10;
-	
-	// 
-	struct supervisor supervisor;
+	params.maxClients = args.maxClients;
+	params.indexfile = args.indexfile;
+	params.timeout = args.timeout;
 	
 	// Spawn worker processes
+	struct supervisor supervisor;
 	pid_t pid;
 	
-	for (int i = 0; i < args.numWorkers; i++)
+	for (unsigned int i = 0; i < args.numWorkers; i++)
 	{
 		int pidfd;
 		
@@ -250,12 +271,12 @@ int main(int argc, char* argv[])
 		}
 		else if (pid < 0) // Error
 		{
-			fprintf(stderr, "S - Error: Cannot fork off worker process %i - %s\n", i, strerror(errno));
+			fprintf(stderr, "S - Error: Cannot fork off worker process %u - %s\n", i, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 		else // Parent
 		{
-			fprintf(stderr, "S - Spawned worker process %i (PID %i)\n", i, pid);
+			fprintf(stderr, "S - Spawned worker process %u (PID %i)\n", i, pid);
 			
 			supervisor.workers[i].number = i;
 			supervisor.workers[i].pid = pid;
@@ -266,6 +287,7 @@ int main(int argc, char* argv[])
 	// Tasks for each process
 	if (pid == 0) // Worker task
 	{
+		// There's no reason for the child to have stdin and stdout open, but stderr is needed
 		int devnull = open("/dev/null", O_RDONLY);
 		
 		dup2(devnull, STDIN_FILENO);
@@ -273,6 +295,7 @@ int main(int argc, char* argv[])
 		
 		close(devnull);
 		
+		//
 		int retval = doserver(&params);
 		
 		if (retval < 0)
@@ -287,7 +310,7 @@ int main(int argc, char* argv[])
 		supervisor.numWorkers = args.numWorkers;
 		supervisor.activeWorkers = args.numWorkers;
 		
-		//
+		// Set up signals and the signalfd
 		sigset_t mask;
 		
 		sigemptyset(&mask);
@@ -309,15 +332,17 @@ int main(int argc, char* argv[])
 		
 		fprintf(stderr, "S - All workers spawned\n");
 		
-		supervisor.loop = sepoll_create(args.numWorkers + 1);
+		// Create event loop with enough room for each worker and the signalfd
+		supervisor.loop = sepoll_create((int)args.numWorkers + 1);
 		
 		sepoll_add(supervisor.loop, supervisor.sigfd, EPOLLIN | EPOLLET, sigfd_event, &supervisor, NULL);
 		
-		for (int i = 0; i < args.numWorkers; i++)
+		for (unsigned int i = 0; i < args.numWorkers; i++)
 		{
 			sepoll_add(supervisor.loop, supervisor.workers[i].pidfd, EPOLLIN, pidfd_event, &supervisor, &supervisor.workers[i]);
 		}
 		
+		// Event loop doesn't exit until all children exit
 		sepoll_enter(supervisor.loop);
 		
 		sepoll_destroy(supervisor.loop);

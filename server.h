@@ -6,12 +6,12 @@ struct server_params
 	unsigned short port;
 	
 	// Client management
-	int maxClients;
+	unsigned int maxClients;
 	unsigned int timeout;
 	
 	// Paths and files
 	const char* directory;
-	const char* indexFile;
+	const char* indexfile;
 };
 
 int doserver(struct server_params* params);

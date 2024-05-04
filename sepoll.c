@@ -44,7 +44,7 @@ struct sepoll_loop
 	int uring_epoll_event_index;
 	struct io_uring uring;
 	
-	int run;
+	_Bool run;
 };
 
 // *********************************************************************
@@ -245,7 +245,7 @@ static inline void sepoll_process_if_less(struct sepoll_loop* loop, unsigned int
 // 
 // *********************************************************************
 
-static inline void sepoll_epollctl(struct sepoll_loop* loop, int op, int fd, struct epoll_event* event, int close)
+static inline void sepoll_epollctl(struct sepoll_loop* loop, int op, int fd, struct epoll_event* event, _Bool close)
 {
 	sepoll_process_if_less(loop, 2);
 	
@@ -385,7 +385,7 @@ int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, 
 	return 0;
 }
 
-int sepoll_remove(struct sepoll_loop* loop, int fd, int close)
+int sepoll_remove(struct sepoll_loop* loop, int fd, _Bool close)
 {
 	// Get the event data associated with the file descriptor
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);

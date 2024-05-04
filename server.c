@@ -116,7 +116,7 @@ struct server_state
 	struct sepoll_loop* loop;
 	
 	// Clients
-	int numClients;
+	unsigned int numClients;
 	struct client_list clients;
 };
 
@@ -133,7 +133,6 @@ static void client_disconnect(struct server_state* server, struct client_state* 
 	
 	// Deal with the socket
 	sepoll_remove(server->loop, client->socket, 1);
-	//close(client->socket);
 	
 	// Get rid of the list entry
 	LIST_REMOVE(client, entry);
@@ -163,7 +162,6 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 	struct client_state* client = userdata2;
 	
 	sepoll_remove(server->loop, fd, 1);
-	//close(fd);
 	
 	client_disconnect(server, client);
 }
@@ -244,7 +242,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// Figure out the filename
 			if (filenameSize == 0)
 			{
-				filename = (char*)server->params->indexFile;
+				filename = (char*)server->params->indexfile;
 			}
 			else
 			{
@@ -331,7 +329,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// If it's a directory, try to open up an index file within it
 					if (S_ISDIR(statbuf.st_mode))
 					{
-						int indexfd = openat(client->file, server->params->indexFile, O_RDONLY | O_CLOEXEC);
+						int indexfd = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
 						
 						if (indexfd < 0)
 						{
@@ -497,6 +495,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 	
 	if (events & EPOLLIN)
 	{
+		// Accept incoming connections until it blocks. This is actually quite a bit faster than accepting one connection at a time before going back to do other things.
 		while (1)
 		{
 			// Accept the next incoming connection
@@ -855,6 +854,13 @@ int doserver(struct server_params* params)
 		return -1;
 	}
 	
+	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
+	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+	{
+		fprintf(stderr, "%i - Error: Cannot ignore SIGPIPE: %s\n", getpid(), strerror(errno));
+		return -1;
+	}
+	
 	// Max out open file descriptor limit
 	if (maxfdlimit() < 0)
 	{
@@ -900,7 +906,7 @@ int doserver(struct server_params* params)
 	}
 	
 	// Set up epoll
-	server.loop = sepoll_create(params->maxClients + 3);
+	server.loop = sepoll_create((int)params->maxClients + 3);
 	sepoll_add(server.loop, server.sigfd, EPOLLIN | EPOLLET, server_signal, &server, NULL);
 	sepoll_add(server.loop, server.timerfd, EPOLLIN, server_timer, &server, NULL);
 	sepoll_add(server.loop, server.socket, EPOLLIN | EPOLLET, server_socket, &server, NULL);

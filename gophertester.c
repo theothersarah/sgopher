@@ -185,7 +185,7 @@ void sfree(void* ptr)
 }
 
 // *********************************************************************
-// These things are dynamically allocated and are freed at exit
+// Shared memory which is dynamically allocated and then freed at exit
 // *********************************************************************
 
 struct result
@@ -285,11 +285,13 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 	
 	while (1)
 	{
+		// Score an attempt
 		results[id].total++;
 		
+		// Accumulator for received file size
 		ssize_t received = 0;
 		
-		// Create socket
+		// Open socket
 		int sockfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
 		
 		if (sockfd < 0)
@@ -301,6 +303,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 		// Connect to the host
 		if (connect(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
 		{
+			// The socket is nonblocking so it should return EINPROGRESS
 			if (errno != EINPROGRESS)
 			{
 				fprintf(stderr, "Error: Worker #%i cannot connect to server: %s\n", id, strerror(errno));
@@ -314,6 +317,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 		
 		while (1)
 		{
+			// Wait on the socket and timer FDs
 			int n = poll(poll_list, 2, args->timeout);
 			
 			if (n < 0)
@@ -323,6 +327,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 			}
 			else if (n == 0)
 			{
+				// Report a timeout only the first time it happens and then score it
 				if (results[id].timeout == 0)
 				{
 					fprintf(stderr, "Warning: Worker #%i timed out\n", id);
@@ -342,9 +347,10 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 				poll_list[0].fd = -1;
 			}
 			
-			// Check socket state
-			if (poll_list[1].revents & POLLOUT) // Ready to send message
+			// Check socket state. Only in or out should occur at the same time since the events bitmap is used as a state machine
+			if (poll_list[1].revents & POLLOUT)
 			{
+				// Send the request message
 				ssize_t n = writev(sockfd, request, 2);
 				
 				if (n < 0)
@@ -354,6 +360,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 				}
 				else if (n != requestSize)
 				{
+					// The request should be small enough to send the full string in one go so something is wrong if not
 					fprintf(stderr, "Error: Worker #%i cannot write full request string\n", id);
 					return -1;
 				}
@@ -361,7 +368,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 				// Now we want to listen for a reply
 				poll_list[1].events = POLLIN;
 			}
-			else if (poll_list[1].revents & POLLIN) // Reply waiting
+			else if (poll_list[1].revents & POLLIN)
 			{
 				// Read until it blocks
 				while (1)
@@ -370,6 +377,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 					
 					if (n < 0)
 					{
+						// If it would block then that's okay, but halt on any other error
 						if (errno == EAGAIN || errno == EWOULDBLOCK)
 						{
 							break;
@@ -382,16 +390,15 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 					}
 					else if (n == 0)
 					{
-						// End of file means we score the result and break out to do it again
+						// End of file means we figure out what to score and then do a double-break to repeat everything all over again
 						if (args->size > 0 && received != args->size)
 						{
-							// Warn the first time we get a size mismatch
+							// Report a size mismatch only the first time it happens and then score it
 							if (results[id].mismatch == 0)
 							{
 								fprintf(stderr, "Warning: Worker #%i size mismatch\n", id);
 							}
 							
-							// Score a size mismatch
 							results[id].mismatch++;
 						}
 						else
@@ -400,7 +407,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 							results[id].successful++;
 						}
 						
-						// This has no relevance to poll itself, it's just used as a convenient way to pass on that we need to break a second time thanks to nested while loops
+						// This has no relevance to poll itself, it's just used as a convenient way to pass on that we need to do a second break in a moment
 						poll_list[1].events = 0;
 						
 						break;
@@ -422,9 +429,11 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 		// If the timerfd ticked, we're done
 		if (poll_list[0].fd < 0)
 		{
-			return 0;
+			break;
 		}
 	}
+	
+	return 0;
 }
 
 // *********************************************************************
