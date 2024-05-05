@@ -256,11 +256,11 @@ int main(int argc, char* argv[])
 	params.timeout = args.timeout;
 	
 	// Where we're going we only need stderr
-	int devnull = open("/dev/null", O_RDONLY);
+	int devnull = open("/dev/null", O_RDWR);
 	
 	if (devnull < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot open up /dev/null: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot open /dev/null: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	
@@ -294,7 +294,7 @@ int main(int argc, char* argv[])
 		}
 		else if (pid < 0) // Error
 		{
-			fprintf(stderr, "S - Error: Cannot fork off worker process %u - %s\n", i, strerror(errno));
+			fprintf(stderr, "S - Error: Cannot fork worker process %u - %s\n", i, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 		else // Parent

@@ -12,7 +12,7 @@
 // open, openat
 #include <fcntl.h>
 
-// signal, sigemptyset, sigaddset, sigprocmask
+// sigaction, sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
 // fprintf
@@ -656,6 +656,34 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 }
 
 // *********************************************************************
+// Ignore signals that are counteractive to the program
+// *********************************************************************
+static int ignoresignals()
+{
+	struct sigaction act =
+	{
+		.sa_handler = SIG_IGN,
+		
+	};
+	
+	// We want to ignore SIGCHLD because we don't care about child exit codes and want it to be automatically reaped
+	if (sigaction(SIGCHLD, &act, NULL) < 0)
+	{
+		fprintf(stderr, "%i - Error: Cannot ignore  SIGCHLD: %s\n", getpid(), strerror(errno));
+		return -1;
+	}
+	
+	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
+	if (sigaction(SIGCHLD, &act, NULL) < 0)
+	{
+		fprintf(stderr, "%i - Error: Cannot ignore  SIGPIPE: %s\n", getpid(), strerror(errno));
+		return -1;
+	}
+	
+	return 0;
+}
+
+// *********************************************************************
 // Set the process open fd limit to the maximum allowed
 // *********************************************************************
 static int maxfdlimit()
@@ -847,17 +875,9 @@ static int open_timerfd(time_t interval)
 // *********************************************************************
 int doserver(struct server_params* params)
 {
-	// We don't care about exit codes etc. so ignore SIGCHLD so dead children are reaped automatically
-	if (signal(SIGCHLD, SIG_IGN) == SIG_ERR)
+	// Ignore signals that we really don't want
+	if (ignoresignals() < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot ignore SIGCHLD: %s\n", getpid(), strerror(errno));
-		return -1;
-	}
-	
-	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
-	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
-	{
-		fprintf(stderr, "%i - Error: Cannot ignore SIGPIPE: %s\n", getpid(), strerror(errno));
 		return -1;
 	}
 	
