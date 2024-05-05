@@ -15,7 +15,7 @@
 // sigaction, sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
-// fprintf
+// fprintf, snprintf
 #include <stdio.h>
 
 // malloc, free
@@ -213,222 +213,231 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Search for crlf sequence
 		char* crlf = memmem(client->buffer, client->count, "\r\n", 2);
 		
-		if (crlf != NULL)
+		// No patience if a valid request didn't arrive yet after we did 2+ reads from the socket already
+		if (crlf == NULL)
 		{
-			// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
-			char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
-			size_t filenameSize;
-			char* filename;
+			write(fd, ERROR_BAD, sizeof(ERROR_BAD) - 1);
+			client_disconnect(server, client);
+			return;
+		}
+		
+		// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
+		char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
+		size_t filenameSize;
+		char* filename;
+		
+		// Buffer for query (size -2 because CRLF is cut off and +1 to add null to the end)
+		char queryBuffer[MAX_REQUEST_SIZE - 2 + 1];
+		size_t querySize = 0;
+		char* query = NULL;
+		
+		// Search for a tab which indicates the request contains a query
+		char* tab = memchr(client->buffer, '\t', client->count);
+		
+		// Figure out the length of the provided selector and the query
+		if (tab != NULL && tab < crlf)
+		{
+			filenameSize = (size_t)(tab - client->buffer);
+			querySize = (size_t)(crlf - tab - 1);
+		}
+		else
+		{
+			filenameSize = (size_t)(crlf - client->buffer);
+		}
+		
+		// Figure out the filename
+		if (filenameSize == 0)
+		{
+			filename = server->params->indexfile;
+		}
+		else
+		{
+			// Inspect provided path for leading periods to prevent use of relative paths and access to hidden files
+			char* str_curr = client->buffer;
 			
-			// Buffer for query (size -2 because CRLF is cut off and +1 to add null to the end)
-			char queryBuffer[MAX_REQUEST_SIZE - 2 + 1];
-			size_t querySize = 0;
-			char* query = NULL;
-			
-			// Search for a tab which indicates the request contains a query
-			char* tab = memchr(client->buffer, '\t', client->count);
-			
-			// Figure out the length of the provided selector and the query
-			if (tab != NULL && tab < crlf)
+			do
 			{
-				filenameSize = (size_t)(tab - client->buffer);
-				querySize = (size_t)(crlf - tab - 1);
-			}
-			else
-			{
-				filenameSize = (size_t)(crlf - client->buffer);
-			}
-			
-			// Figure out the filename
-			if (filenameSize == 0)
-			{
-				filename = server->params->indexfile;
-			}
-			else
-			{
-				// Inspect provided path for leading periods to prevent use of relative paths and access to hidden files
-				char* str_curr = client->buffer;
+				size_t str_size = (size_t)(client->buffer + filenameSize - str_curr);
 				
-				do
+				if (str_size == 0)
 				{
-					size_t str_size = (size_t)(client->buffer + filenameSize - str_curr);
-					
-					if (str_size == 0)
-					{
-						break;
-					}
-					
-					if (*str_curr == '.')
-					{
-						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
-						client_disconnect(server, client);
-						return;
-					}
-					
-					str_curr = memchr(str_curr, '/', str_size);
-				}
-				while (str_curr++ != NULL);
-				
-				// Ensure that the path is relative to the document root
-				// It's okay if it already starts with a / because consecutive slashes are ignored
-				filenameBuffer[0] = '.';
-				filenameBuffer[1] = '/';
-				memcpy(filenameBuffer + 2, client->buffer, filenameSize);
-				filenameBuffer[filenameSize + 2] = '\0';
-				
-				filename = filenameBuffer;
-			}
-			
-			// Fill the query buffer
-			if (querySize > 0)
-			{
-				memcpy(queryBuffer, tab + 1, querySize);
-				queryBuffer[querySize] = '\0';
-				query = queryBuffer;
-			}
-			
-			// Try to open the requested file
-			client->file = openat(server->directory, filename, O_RDONLY | O_CLOEXEC);
-			
-			if (client->file < 0)
-			{
-				write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
-				client_disconnect(server, client);
-				return;
-			}
-			
-			// Now let's figure out what to do with the file
-			struct stat statbuf;
-			
-			while (1)
-			{
-				// Get file information
-				if (fstat(client->file, &statbuf) < 0)
-				{
-					fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					client_disconnect(server, client);
-					return;
+					break;
 				}
 				
-				// Check if world readable
-				if (!(statbuf.st_mode & S_IROTH))
+				if (*str_curr == '.')
 				{
 					write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
 					client_disconnect(server, client);
 					return;
 				}
 				
-				// Check if regular file
-				if (S_ISREG(statbuf.st_mode))
-				{
-					break;
-				}
-				else
-				{
-					// If it's a directory, try to open up an index file within it
-					if (S_ISDIR(statbuf.st_mode))
-					{
-						int indexfd = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
-						
-						if (indexfd < 0)
-						{
-							write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
-							client_disconnect(server, client);
-							return;
-						}
-						
-						// An index file was found so let's do the whole inspection dance with it again
-						// This can result in an infinite loop if an index file is a symlink to its own directory
-						// But if you do that you kind of deserve what you get I think
-						sepoll_queue_close(server->loop, client->file);
-						client->file = indexfd;
-						
-						continue;
-					}
-					else
-					{
-						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
-						client_disconnect(server, client);
-						return;
-					}
-				}
+				str_curr = memchr(str_curr, '/', str_size);
 			}
+			while (str_curr++ != NULL);
 			
-			// If the file is world executable, fork off a process and try to execute it
-			if (statbuf.st_mode & S_IXOTH)
-			{
-				// This custom fork returns both a pid and pidfd with one syscall
-				pid_t pid = sfork(&client->pidfd);
-				
-				if (pid == 0)
-				{
-					// Replace the fork's stdout FD with the socket FD
-					if (dup2(fd, STDOUT_FILENO) < 0)
-					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket FD over stdout: %s\n", getpid(), strerror(errno));
-						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-						exit(EXIT_FAILURE);
-					}
-					
-					// Command line arguments
-					char* argv[] =
-					{
-						filename,
-						query,
-						NULL
-					};
-					
-					// Environment variables
-					char* envp[] =
-					{
-						NULL
-					};
-					
-					// dup makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
-					fexecve(dup(client->file), argv, envp);
-
-					// This is only reached if there was a problem with fexecve
-					fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					exit(EXIT_FAILURE);
-				}
-				else if (pid < 0)
-				{
-					fprintf(stderr, "%i - Error: Cannot fork CGI process: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					client_disconnect(server, client);
-					return;
-				}
-				
-				// We don't need the file anymore since it should be off happily executing in the forked process
-				sepoll_queue_close(server->loop, client->file);
-				client->file = -1;
-				
-				// Alter the events on the client socket to only handle errors
-				sepoll_mod_events(server->loop, fd, 0);
-				
-				// Add the pidfd to the event loop
-				sepoll_add(server->loop, client->pidfd, EPOLLIN, client_pidfd, server, client);
-			}
-			else // Otherwise, transmit the file
-			{
-				//
-				client->filesize = statbuf.st_size;
-				
-				//
-				sepoll_mod_events(server->loop, fd, EPOLLOUT | EPOLLET);
-			}
+			// Ensure that the path is relative to the document root
+			// It's okay if it already starts with a / because consecutive slashes are ignored
+			filenameBuffer[0] = '.';
+			filenameBuffer[1] = '/';
+			memcpy(filenameBuffer + 2, client->buffer, filenameSize);
+			filenameBuffer[filenameSize + 2] = '\0';
 			
-			// Update timestamp
-			client->timestamp = time(NULL);
+			filename = filenameBuffer;
 		}
-		else // No patience if a valid request didn't arrive yet after we did 2+ reads from the socket already
+		
+		// Fill the query buffer
+		if (querySize > 0)
 		{
-			write(fd, ERROR_BAD, sizeof(ERROR_BAD) - 1);
+			memcpy(queryBuffer, tab + 1, querySize);
+			queryBuffer[querySize] = '\0';
+			query = queryBuffer;
+		}
+		
+		// Try to open the requested file
+		client->file = openat(server->directory, filename, O_RDONLY | O_CLOEXEC);
+		
+		if (client->file < 0)
+		{
+			write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
 			client_disconnect(server, client);
 			return;
 		}
+		
+		// Now let's figure out what to do with the file
+		struct stat statbuf;
+		
+		while (1)
+		{
+			// Get file information
+			if (fstat(client->file, &statbuf) < 0)
+			{
+				fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				client_disconnect(server, client);
+				return;
+			}
+			
+			// Check if world readable
+			if (!(statbuf.st_mode & S_IROTH))
+			{
+				write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+				client_disconnect(server, client);
+				return;
+			}
+			
+			// Check if regular file
+			if (S_ISREG(statbuf.st_mode))
+			{
+				break;
+			}
+			else
+			{
+				// If it's a directory, try to open up an index file within it
+				if (S_ISDIR(statbuf.st_mode))
+				{
+					int indexfd = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
+					
+					if (indexfd < 0)
+					{
+						write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
+						client_disconnect(server, client);
+						return;
+					}
+					
+					// An index file was found so let's do the whole inspection dance with it again
+					// This can result in an infinite loop if an index file is a symlink to its own directory
+					// But if you do that you kind of deserve what you get I think
+					sepoll_queue_close(server->loop, client->file);
+					client->file = indexfd;
+					
+					continue;
+				}
+				else
+				{
+					write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+					client_disconnect(server, client);
+					return;
+				}
+			}
+		}
+		
+		// If the file is world executable, fork off a process and try to execute it
+		if (statbuf.st_mode & S_IXOTH)
+		{
+			// This custom fork returns both a pid and pidfd with one syscall
+			pid_t pid = sfork(&client->pidfd);
+			
+			if (pid == 0)
+			{
+				// Replace the fork's stdout FD with the socket FD
+				if (dup2(fd, STDOUT_FILENO) < 0)
+				{
+					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket FD over stdout: %s\n", getpid(), strerror(errno));
+					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					exit(EXIT_FAILURE);
+				}
+				
+				// Command line arguments
+				char* argv[] =
+				{
+					filename,
+					query,
+					NULL
+				};
+				
+				// Environment variables
+				char selector[1024];
+				snprintf(selector, 1024, "SELECTOR=%.*s", (int)filenameSize, client->buffer);
+				
+				char hostname[1024];
+				snprintf(hostname, 1024, "HOSTNAME=%s", server->params->hostname);
+				
+				char port[1024];
+				snprintf(port, 1024, "PORT=%hu", server->params->port);
+				
+				char* envp[] =
+				{
+					selector,
+					hostname,
+					port,
+					NULL
+				};
+				
+				// dup makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
+				fexecve(dup(client->file), argv, envp);
+
+				// This is only reached if there was a problem with fexecve
+				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
+				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				exit(EXIT_FAILURE);
+			}
+			else if (pid < 0)
+			{
+				fprintf(stderr, "%i - Error: Cannot fork CGI process: %s\n", getpid(), strerror(errno));
+				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				client_disconnect(server, client);
+				return;
+			}
+			
+			// We don't need the file anymore since it should be off happily executing in the forked process
+			sepoll_queue_close(server->loop, client->file);
+			client->file = -1;
+			
+			// Alter the events on the client socket to only handle errors
+			sepoll_mod_events(server->loop, fd, 0);
+			
+			// Add the pidfd to the event loop
+			sepoll_add(server->loop, client->pidfd, EPOLLIN, client_pidfd, server, client);
+		}
+		else
+		{
+			// Otherwise, transmit the file
+			client->filesize = statbuf.st_size;
+			sepoll_mod_events(server->loop, fd, EPOLLOUT | EPOLLET);
+		}
+		
+		// Update timestamp
+		client->timestamp = time(NULL);
 	}
 	
 	if (events & EPOLLOUT)

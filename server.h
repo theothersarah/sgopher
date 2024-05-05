@@ -3,6 +3,7 @@
 struct server_params
 {
 	// Network
+	char* hostname;
 	unsigned short port;
 	
 	// Client management

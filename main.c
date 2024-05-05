@@ -41,6 +41,7 @@
 enum arg_keys
 {
 	KEY_DIRECTORY = 'd',
+	KEY_HOSTNAME = 'h',
 	KEY_INDEXFILE = 'i',
 	KEY_MAXCLIENTS = 'm',
 	KEY_PORT = 'p',
@@ -52,6 +53,7 @@ enum arg_keys
 struct arguments
 {
 	char* directory;
+	char* hostname;
 	char* indexfile;
 	unsigned int maxClients;
 	unsigned short port;
@@ -63,7 +65,8 @@ struct arguments
 static struct argp_option argp_options[] =
 {
 	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from. Defaults to ./gopherroot"},
-	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory. Defaults to gophermap"},
+	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server for generation of gophermaps. Defaults to localhost"},
+	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap"},
 	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process. Defaults to 4096"},
 	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port. Defaults to 70"},
 	{"timeout",		KEY_TIMEOUT,	"NUMBER",	0,	"Time in seconds before booting inactive client. Defaults to 10"},
@@ -87,6 +90,9 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 	{
 	case KEY_DIRECTORY:
 		args->directory = arg;
+		break;
+	case KEY_HOSTNAME:
+		args->hostname = arg;
 		break;
 	case KEY_INDEXFILE:
 		args->indexfile = arg;
@@ -222,7 +228,8 @@ int main(int argc, char* argv[])
 	// Default argument values
 	struct arguments args;
 	args.directory = "./gopherroot";
-	args.indexfile = "gophermap";
+	args.hostname = "localhost";
+	args.indexfile = ".gophermap";
 	args.maxClients = 4096;
 	args.port = 70;
 	args.timeout = 10;
@@ -240,6 +247,7 @@ int main(int argc, char* argv[])
 	
 	// Report arguments
 	fprintf(stderr, "S - Serving files from %s\n", args.directory);
+	fprintf(stderr, "S - Hostname is %s\n", args.hostname);
 	fprintf(stderr, "S - Index filename is %s\n", args.indexfile);
 	fprintf(stderr, "S - Maximum number of clients is %u\n", args.maxClients);
 	fprintf(stderr, "S - Listening on port %hu\n", args.port);
@@ -249,6 +257,7 @@ int main(int argc, char* argv[])
 	// Copy arguments to server parameters
 	// Why do it like this? Just in case they are parsed from a configuration file in the future instead of the command line
 	struct server_params params;
+	params.hostname = args.hostname;
 	params.directory = args.directory;
 	params.port = args.port;
 	params.maxClients = args.maxClients;
