@@ -1,11 +1,11 @@
 // for tdestroy
 #define _GNU_SOURCE
 
+// io_uring API
+#include <liburing.h>
+
 // tsearch, tdelete, tfind, tdestroy
 #include <search.h>
-
-// bool
-#include <stdbool.h>
 
 // malloc, calloc, reallocarray, free
 #include <stdlib.h>
@@ -39,7 +39,12 @@ struct sepoll_loop
 	int epoll_events_size;
 	int epollfd;
 	
-	bool run;
+	struct epoll_event* uring_epoll_events;
+	int uring_event_size;
+	int uring_epoll_event_index;
+	struct io_uring uring;
+	
+	_Bool run;
 };
 
 // *********************************************************************
@@ -105,10 +110,30 @@ struct sepoll_loop* sepoll_create(int size)
 	}
 	
 	//
+	loop->uring_epoll_events = calloc((size_t)size, sizeof(struct epoll_event));
+	
+	if (loop->uring_epoll_events == NULL)
+	{
+		free(loop->epoll_events);
+		free(loop);
+		return NULL;
+	}
+	
+	//
 	loop->epollfd = epoll_create1(EPOLL_CLOEXEC);
 	
 	if (loop->epollfd < 0)
 	{
+		free(loop->uring_epoll_events);
+		free(loop->epoll_events);
+		free(loop);
+		return NULL;
+	}
+	
+	if (io_uring_queue_init(4096, &loop->uring, 0) < 0)
+	{
+		close(loop->epollfd);
+		free(loop->uring_epoll_events);
 		free(loop->epoll_events);
 		free(loop);
 		return NULL;
@@ -118,6 +143,9 @@ struct sepoll_loop* sepoll_create(int size)
 	loop->callbacks_tree = NULL;
 	loop->callbacks_gc_tree = NULL;
 	loop->epoll_events_size = size;
+	
+	loop->uring_event_size = size;
+	loop->uring_epoll_event_index = 0;
 	
 	return loop;
 }
@@ -169,9 +197,12 @@ void sepoll_destroy(struct sepoll_loop* loop)
 		tdestroy(loop->callbacks_gc_tree, free);
 	}
 	
+	io_uring_queue_exit(&loop->uring);
+	
 	close(loop->epollfd);
 	
 	free(loop->epoll_events);
+	free(loop->uring_epoll_events);
 	
 	free(loop);
 }
@@ -179,6 +210,67 @@ void sepoll_destroy(struct sepoll_loop* loop)
 // *********************************************************************
 // 
 // *********************************************************************
+
+static inline void sepoll_process_uring(struct sepoll_loop* loop)
+{
+	//
+	io_uring_submit_and_get_events(&loop->uring);
+	
+	unsigned int n = io_uring_cq_ready(&loop->uring);
+	
+	while (n > 0)
+	{
+		io_uring_cq_advance(&loop->uring, n);
+		
+		if (io_uring_cq_has_overflow(&loop->uring) != 0)
+		{
+			io_uring_get_events(&loop->uring);
+		}
+		
+		n = io_uring_cq_ready(&loop->uring);
+	}
+	
+	loop->uring_epoll_event_index = 0;
+}
+
+static inline void sepoll_process_if_less(struct sepoll_loop* loop, unsigned int n)
+{
+	if (io_uring_sq_space_left(&loop->uring) < n)
+	{
+		sepoll_process_uring(loop);
+	}
+}
+
+// *********************************************************************
+// 
+// *********************************************************************
+
+static inline void sepoll_epollctl(struct sepoll_loop* loop, int op, int fd, struct epoll_event* event, _Bool close)
+{
+	sepoll_process_if_less(loop, 2);
+	
+	struct epoll_event* sqe_event = NULL;
+	
+	if (op != EPOLL_CTL_DEL)
+	{
+		loop->uring_epoll_events[loop->uring_epoll_event_index].events = event->events;
+		loop->uring_epoll_events[loop->uring_epoll_event_index].data.ptr = event->data.ptr;
+		
+		sqe_event = &loop->uring_epoll_events[loop->uring_epoll_event_index];
+		
+		loop->uring_epoll_event_index++;
+	}
+	
+	struct io_uring_sqe* sqe = io_uring_get_sqe(&loop->uring);
+	io_uring_prep_epoll_ctl(sqe, loop->epollfd, fd, op, sqe_event);
+
+	if (close)
+	{
+		io_uring_sqe_set_flags(sqe, IOSQE_IO_HARDLINK);
+		sqe = io_uring_get_sqe(&loop->uring);
+		io_uring_prep_close(sqe, fd);
+	}
+}
 
 int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
@@ -211,11 +303,7 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 		.data.ptr = callback
 	};
 	
-	if (epoll_ctl(loop->epollfd, EPOLL_CTL_ADD, fd, &event) < 0)
-	{
-		free(callback);
-		return -1;
-	}
+	sepoll_epollctl(loop, EPOLL_CTL_ADD, fd, &event, 0);
 	
 	return 0;
 }
@@ -246,20 +334,17 @@ int sepoll_mod(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 		return -1;
 	}
 	
+	callback->function = function;
+	callback->userdata1 = userdata1;
+	callback->userdata2 = userdata2;
+	
 	struct epoll_event event =
 	{
 		.events = events,
 		.data.ptr = callback
 	};
 	
-	if (epoll_ctl(loop->epollfd, EPOLL_CTL_MOD, fd, &event) < 0)
-	{
-		return -1;
-	}
-	
-	callback->function = function;
-	callback->userdata1 = userdata1;
-	callback->userdata2 = userdata2;
+	sepoll_epollctl(loop, EPOLL_CTL_MOD, fd, &event, 0);
 	
 	return 0;
 }
@@ -279,7 +364,9 @@ int sepoll_mod_events(struct sepoll_loop* loop, int fd, unsigned int events)
 		.data.ptr = callback
 	};
 	
-	return epoll_ctl(loop->epollfd, EPOLL_CTL_MOD, fd, &event);
+	sepoll_epollctl(loop, EPOLL_CTL_MOD, fd, &event, 0);
+	
+	return 0;
 }
 
 int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
@@ -298,7 +385,7 @@ int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, 
 	return 0;
 }
 
-int sepoll_remove(struct sepoll_loop* loop, int fd)
+int sepoll_remove(struct sepoll_loop* loop, int fd, _Bool close)
 {
 	// Get the event data associated with the file descriptor
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
@@ -316,7 +403,21 @@ int sepoll_remove(struct sepoll_loop* loop, int fd)
 	tsearch(callback, &loop->callbacks_gc_tree, compare_pointer);
 	
 	// Remove the file descriptor from epoll's interest list
-	return epoll_ctl(loop->epollfd, EPOLL_CTL_DEL, fd, NULL);
+	sepoll_epollctl(loop, EPOLL_CTL_DEL, fd, NULL, close);
+	
+	return 0;
+}
+
+// *********************************************************************
+// 
+// *********************************************************************
+
+void sepoll_queue_close(struct sepoll_loop* loop, int fd)
+{
+	sepoll_process_if_less(loop, 1);
+	
+	struct io_uring_sqe* sqe = io_uring_get_sqe(&loop->uring);
+	io_uring_prep_close(sqe, fd);
 }
 
 // *********************************************************************
@@ -351,12 +452,20 @@ static inline int sepoll_iter(struct sepoll_loop* loop, int timeout)
 		loop->callbacks_gc_tree = NULL;
 	}
 	
+	//
+	if (io_uring_sq_ready(&loop->uring) > 0)
+	{
+		sepoll_process_uring(loop);
+	}
+	
 	return n;
 }
 
 int sepoll_enter(struct sepoll_loop* loop)
 {
-	loop->run = true;
+	sepoll_process_uring(loop);
+	
+	loop->run = 1;
 	
 	do
 	{
@@ -374,10 +483,12 @@ int sepoll_enter(struct sepoll_loop* loop)
 
 void sepoll_exit(struct sepoll_loop* loop)
 {
-	loop->run = false;
+	loop->run = 0;
 }
 
 int sepoll_once(struct sepoll_loop* loop, int timeout)
 {
+	sepoll_process_uring(loop);
+	
 	return sepoll_iter(loop, timeout);
 }

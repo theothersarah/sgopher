@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wconversion -Ofast
-LDFLAGS = -luring
+LDFLAGS = 
 OBJFILES = main.o server.o sepoll.o sfork.o
 TARGET = sgopher
 

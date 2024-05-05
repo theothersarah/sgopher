@@ -51,10 +51,10 @@
 // time
 #include <time.h>
 
-// read, write, close, getpid, dup2, dup, fexecve
+// read, write, close, getpid, dup2, dup, fexecve, fchdir
 #include <unistd.h>
 
-//
+// My stuff
 #include "sfork.h"
 #include "sepoll.h"
 #include "server.h"
@@ -94,6 +94,7 @@ struct client_state
 	off_t sentsize;
 	
 	// CGI
+	int dirfd;
 	int pidfd;
 	
 	LIST_ENTRY(client_state) entry;
@@ -128,11 +129,18 @@ static void client_disconnect(struct server_state* server, struct client_state* 
 	// Deal with the open file, if any
 	if (client->file >= 0)
 	{
-		sepoll_queue_close(server->loop, client->file);
+		close(client->file);
+	}
+	
+	// Deal with the open directory, if any
+	if (client->dirfd >= 0)
+	{
+		close(client->dirfd);
 	}
 	
 	// Deal with the socket
-	sepoll_remove(server->loop, client->socket, 1);
+	sepoll_remove(server->loop, client->socket);
+	close(client->socket);
 	
 	// Get rid of the list entry
 	LIST_REMOVE(client, entry);
@@ -149,7 +157,7 @@ static inline void pidfd_kill(int pidfd)
 {
 	if (pidfd_send_signal(pidfd, SIGKILL, NULL, 0) < 0)
 	{
-		fprintf(stderr, "%i - Warning: Cannot send kill signal via pidfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %s\n", getpid(), strerror(errno));
 	}
 }
 
@@ -161,7 +169,8 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 	struct server_state* server = userdata1;
 	struct client_state* client = userdata2;
 	
-	sepoll_remove(server->loop, fd, 1);
+	sepoll_remove(server->loop, fd);
+	close(fd);
 	
 	client_disconnect(server, client);
 }
@@ -221,15 +230,17 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			return;
 		}
 		
+		// Selector and query position and size
+		char* selector;
+		size_t selectorSize;
+		
+		char* query;
+		size_t querySize;
+		
 		// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
+		char* filename;
 		char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
 		size_t filenameSize;
-		char* filename;
-		
-		// Buffer for query (size -2 because CRLF is cut off and +1 to add null to the end)
-		char queryBuffer[MAX_REQUEST_SIZE - 2 + 1];
-		size_t querySize = 0;
-		char* query = NULL;
 		
 		// Search for a tab which indicates the request contains a query
 		char* tab = memchr(client->buffer, '\t', client->count);
@@ -237,18 +248,33 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Figure out the length of the provided selector and the query
 		if (tab != NULL && tab < crlf)
 		{
-			filenameSize = (size_t)(tab - client->buffer);
+			selectorSize = (size_t)(tab - client->buffer);
 			querySize = (size_t)(crlf - tab - 1);
 		}
 		else
 		{
-			filenameSize = (size_t)(crlf - client->buffer);
+			selectorSize = (size_t)(crlf - client->buffer);
+			querySize = 0;
 		}
 		
-		// Figure out the filename
-		if (filenameSize == 0)
+		// Query size could still have been zero even if there was a tab
+		if (querySize > 0)
 		{
-			filename = server->params->indexfile;
+			query = tab + 1;
+		}
+		else
+		{
+			query = NULL;
+		}
+		
+		// Figure out the filename from the selector
+		if (selectorSize == 0)
+		{
+			// For a blank selector let's assume / was provided
+			selector = "/";
+			selectorSize = 1;
+			filename = "./";
+			filenameSize = 2;
 		}
 		else
 		{
@@ -257,7 +283,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			do
 			{
-				size_t str_size = (size_t)(client->buffer + filenameSize - str_curr);
+				size_t str_size = (size_t)(client->buffer + selectorSize - str_curr);
 				
 				if (str_size == 0)
 				{
@@ -279,18 +305,21 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// It's okay if it already starts with a / because consecutive slashes are ignored
 			filenameBuffer[0] = '.';
 			filenameBuffer[1] = '/';
-			memcpy(filenameBuffer + 2, client->buffer, filenameSize);
-			filenameBuffer[filenameSize + 2] = '\0';
+			memcpy(filenameBuffer + 2, client->buffer, selectorSize);
+			filenameBuffer[selectorSize + 2] = '\0';
 			
 			filename = filenameBuffer;
-		}
-		
-		// Fill the query buffer
-		if (querySize > 0)
-		{
-			memcpy(queryBuffer, tab + 1, querySize);
-			queryBuffer[querySize] = '\0';
-			query = queryBuffer;
+			filenameSize = selectorSize + 2;
+			
+			// If the provided selector did not start with /, let's say it did
+			if (filenameBuffer[2] == '/')
+			{
+				selector = filenameBuffer + 2;
+			}
+			else
+			{
+				selector = filenameBuffer + 1;
+			}
 		}
 		
 		// Try to open the requested file
@@ -303,12 +332,46 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			return;
 		}
 		
-		// Now let's figure out what to do with the file
+		// Get file information
 		struct stat statbuf;
 		
-		while (1)
+		if (fstat(client->file, &statbuf) < 0)
 		{
-			// Get file information
+			fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+			write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+			client_disconnect(server, client);
+			return;
+		}
+		
+		// Check if world readable
+		if (!(statbuf.st_mode & S_IROTH))
+		{
+			write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+			client_disconnect(server, client);
+			return;
+		}
+		
+		// Check type of file
+		if (S_ISREG(statbuf.st_mode))
+		{
+			// This space intentionally blank
+		}
+		else if (S_ISDIR(statbuf.st_mode))
+		{
+			// Keep track of the directory FD for CGI purposes
+			client->dirfd = client->file;
+			
+			// Try to open an index file in the directory
+			client->file = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
+			
+			if (client->file < 0)
+			{
+				write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
+				client_disconnect(server, client);
+				return;
+			}
+			
+			// Now we need the stats of the index file
 			if (fstat(client->file, &statbuf) < 0)
 			{
 				fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
@@ -317,48 +380,19 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				return;
 			}
 			
-			// Check if world readable
-			if (!(statbuf.st_mode & S_IROTH))
+			// If it isn't world readable or a regular file, get out of here
+			if (!(statbuf.st_mode & S_IROTH) || !S_ISREG(statbuf.st_mode))
 			{
 				write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
 				client_disconnect(server, client);
 				return;
 			}
-			
-			// Check if regular file
-			if (S_ISREG(statbuf.st_mode))
-			{
-				break;
-			}
-			else
-			{
-				// If it's a directory, try to open up an index file within it
-				if (S_ISDIR(statbuf.st_mode))
-				{
-					int indexfd = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
-					
-					if (indexfd < 0)
-					{
-						write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
-						client_disconnect(server, client);
-						return;
-					}
-					
-					// An index file was found so let's do the whole inspection dance with it again
-					// This can result in an infinite loop if an index file is a symlink to its own directory
-					// But if you do that you kind of deserve what you get I think
-					sepoll_queue_close(server->loop, client->file);
-					client->file = indexfd;
-					
-					continue;
-				}
-				else
-				{
-					write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
-					client_disconnect(server, client);
-					return;
-				}
-			}
+		}
+		else
+		{
+			write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+			client_disconnect(server, client);
+			return;
 		}
 		
 		// If the file is world executable, fork off a process and try to execute it
@@ -377,29 +411,64 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					exit(EXIT_FAILURE);
 				}
 				
+				// If we don't already have a file descriptor for the containing directory, we need to figure one out from the filename
+				if (client->dirfd < 0)
+				{
+					// It shouldn't be possible for it to not find a slash given that we add one
+					char* slash = memrchr(filename, '/', filenameSize);
+					
+					size_t pathSize = (size_t)(slash - filename);
+					
+					char pathName[1024];
+					
+					memcpy(pathName, filename, pathSize);
+					pathName[pathSize] = '\0';
+					
+					// Try to open the directory
+					client->dirfd = openat(server->directory, pathName, O_RDONLY | O_CLOEXEC);
+					
+					if (client->dirfd < 0)
+					{
+						fprintf(stderr, "%i (CGI process) - Error: Cannot open executable file directory: %s\n", getpid(), strerror(errno));
+						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						exit(EXIT_FAILURE);
+					}
+				}
+				
+				// Change working directory to the location of the executable file
+				if (fchdir(client->dirfd) < 0)
+				{
+					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir to executable file directory: %s\n", getpid(), strerror(errno));
+					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					exit(EXIT_FAILURE);
+				}
+				
 				// Command line arguments
 				char* argv[] =
 				{
-					filename,
-					query,
+					"cgi worker",
 					NULL
 				};
 				
 				// Environment variables
-				char selector[1024];
-				snprintf(selector, 1024, "SELECTOR=%.*s", (int)filenameSize, client->buffer);
+				char env_selector[1024];
+				snprintf(env_selector, 1024, "SELECTOR=%.*s", (int)selectorSize, selector);
 				
-				char hostname[1024];
-				snprintf(hostname, 1024, "HOSTNAME=%s", server->params->hostname);
+				char env_query[1024];
+				snprintf(env_query, 1024, "QUERY=%.*s", (int)querySize, query);
 				
-				char port[1024];
-				snprintf(port, 1024, "PORT=%hu", server->params->port);
+				char env_hostname[1024];
+				snprintf(env_hostname, 1024, "HOSTNAME=%s", server->params->hostname);
+				
+				char env_port[1024];
+				snprintf(env_port, 1024, "PORT=%hu", server->params->port);
 				
 				char* envp[] =
 				{
-					selector,
-					hostname,
-					port,
+					env_selector,
+					env_query,
+					env_hostname,
+					env_port,
 					NULL
 				};
 				
@@ -420,7 +489,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			}
 			
 			// We don't need the file anymore since it should be off happily executing in the forked process
-			sepoll_queue_close(server->loop, client->file);
+			close(client->file);
 			client->file = -1;
 			
 			// Alter the events on the client socket to only handle errors
@@ -521,7 +590,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 				}
 				else
 				{
-					fprintf(stderr, "%i - Warning: Cannot accept incoming connection: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i - Error: Cannot accept incoming connection: %s\n", getpid(), strerror(errno));
 					return;
 				}
 			}
@@ -531,7 +600,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			{
 				// Server's full
 				write(fd, ERROR_UNAVAILABLE, sizeof(ERROR_UNAVAILABLE) - 1);
-				sepoll_queue_close(server->loop, client_fd);
+				close(client_fd);
 				continue;
 			}
 			
@@ -541,7 +610,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (client == NULL)
 			{
 					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					sepoll_queue_close(server->loop, client_fd);
+					close(client_fd);
 					continue;
 			}
 			
@@ -551,6 +620,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			client->count = 0;
 			client->file = -1;
 			client->sentsize = 0;
+			client->dirfd = -1;
 			client->pidfd = -1;
 			
 			inet_ntop(AF_INET, &client_addr.sin_addr, client->address, INET_ADDRSTRLEN);
@@ -593,7 +663,7 @@ static void server_signal(int fd, unsigned int events, void* userdata1, void* us
 			}
 			else
 			{
-				fprintf(stderr, "%i - Warning: Cannot read from signalfd: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot read from signalfd: %s\n", getpid(), strerror(errno));
 				return;
 			}
 		}
@@ -619,7 +689,7 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 	
 	if (read(fd, &buffer, sizeof(uint64_t)) != sizeof(uint64_t))
 	{
-		fprintf(stderr, "%i - Warning: Cannot read from timerfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot read from timerfd: %s\n", getpid(), strerror(errno));
 	}
 	
 	// Check for connection timeout
@@ -640,7 +710,7 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 			
 			if (retval < 0)
 			{
-				fprintf(stderr, "%i - Warning: Cannot get TCP information from socket: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot get TCP information from socket: %s\n", getpid(), strerror(errno));
 			}
 			
 			// Kill the child process if it hasn't used the socket for at least one timeout period
@@ -968,6 +1038,12 @@ int doserver(struct server_params* params)
 		if (client->file >= 0)
 		{
 			close(client->file);
+		}
+		
+		// Deal with the open file, if any
+		if (client->dirfd >= 0)
+		{
+			close(client->dirfd);
 		}
 		
 		// Deal with the socket

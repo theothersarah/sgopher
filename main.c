@@ -4,7 +4,7 @@
 // errno
 #include <errno.h>
 
-// sigemptyset, sigaddset, sigprocmask, kill
+// sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
 // strerror
@@ -28,7 +28,7 @@
 // close, read
 #include <unistd.h>
 
-//
+// My stuff
 #include "sfork.h"
 #include "sepoll.h"
 #include "server.h"
@@ -159,7 +159,7 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 			}
 			else
 			{
-				fprintf(stderr, "S - Warning: Cannot read from signalfd: %s\n", strerror(errno));
+				fprintf(stderr, "S - Error: Cannot read from signalfd: %s\n", strerror(errno));
 				return;
 			}
 		}
@@ -173,12 +173,7 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 				{
 					if (pidfd_send_signal(supervisor->workers[i].pidfd, SIGTERM, NULL, 0) < 0)
 					{
-						fprintf(stderr, "S - Warning: Cannot send kill signal via pidfd: %s\n", strerror(errno));
-						
-						if (kill(supervisor->workers[i].pid, SIGTERM) < 0)
-						{
-							fprintf(stderr, "S - Warning: Kill() failed as well: %s\n", strerror(errno));
-						}
+						fprintf(stderr, "S - Error: Cannot send kill signal via pidfd: %s\n", strerror(errno));
 					}
 				}
 			}
@@ -205,7 +200,8 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 		fprintf(stderr, "S - Worker PID %i exited with status %i\n", worker->pid, siginfo.si_status);
 	}
 
-	sepoll_remove(supervisor->loop, fd, 1);
+	sepoll_remove(supervisor->loop, fd);
+	close(fd);
 	
 	worker->pidfd = -1;
 	
