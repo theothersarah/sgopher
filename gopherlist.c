@@ -1,7 +1,7 @@
-// fdopendir, readdir, closedir
+// opendir, readdir, closedir
 #include <dirent.h>
 
-// open, openat
+// open
 #include <fcntl.h>
 
 // printf, snprintf
@@ -28,6 +28,13 @@ struct ext_entry
 struct ext_entry ext_table[] =
 {
 	{"txt", '0'},
+	{"gif", 'g'},
+	{"jpg", 'I'},
+	{"png", 'I'},
+	{"bmp", 'I'},
+	{"tif", 'I'},
+	{"tiff", 'I'},
+	{"pcx", 'I'},
 	{NULL, '\0'}
 };
 
@@ -47,8 +54,9 @@ void main()
 	char cwd[PATH_MAX];
 	getcwd(cwd, PATH_MAX);
 	
-	// Trim extra slashes out of the selector
-	// Multiple slashes in a row are valid so this is purely cosmetic
+	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is purely cosmetic
+	// Also makes sure the selector has a slash at the beginning and end which are also not strictly necessary,
+	// but play nice with adding the hostname and filename to the front and end respectively
 	char selector[1024];
 	selector[0] = '/';
 	selector[1] = '\0';
@@ -80,15 +88,8 @@ void main()
 	}
 	while (str_curr++ != NULL);
 	
-	// Open up working directory not only so we can search it for files but so we can openat with it
-	int dirfd = open(cwd, O_RDONLY | O_DIRECTORY);
-	
-	if (dirfd < 0)
-	{
-		return;
-	}
-	
-	DIR* directory = fdopendir(dirfd);
+	// Open up a directory stream for the working directory so we can go through its files
+	DIR* directory = opendir(cwd);
 	
 	if (directory == NULL)
 	{
@@ -109,7 +110,7 @@ void main()
 			continue;
 		}
 		
-		int file = openat(dirfd, filename, O_RDONLY);
+		int file = open(filename, O_RDONLY);
 		
 		if (file < 0)
 		{
@@ -132,7 +133,7 @@ void main()
 			continue;
 		}
 		
-		char type;;
+		char type;
 		
 		// Make sure it's a regular file, or a directory that is world executable
 		if (S_ISREG(statbuf.st_mode))
@@ -141,6 +142,7 @@ void main()
 			if (statbuf.st_mode & S_IXOTH)
 			{
 				// Treat executables as a query menu
+				// You did put a gophermap in it, right?
 				type = '7';
 			}
 			else
@@ -180,6 +182,7 @@ void main()
 			continue;
 		}
 		
+		// Build the selector string and output the menu line
 		char fileSelector[1024];
 		snprintf(fileSelector, 1024, "%s%s", selector, filename);
 		
