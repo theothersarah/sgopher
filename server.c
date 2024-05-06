@@ -21,7 +21,7 @@
 // malloc, free
 #include <stdlib.h>
 
-// strerror, memcpy, memchr, memmem
+// strerror, memcpy, memchr, memmem, memrchr
 #include <string.h>
 
 // pidfd_send_signal
@@ -230,7 +230,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			return;
 		}
 		
-		// Selector and query position and size
+		// Selector and query position and size within the client buffer
 		char* selector;
 		size_t selectorSize;
 		
@@ -239,8 +239,8 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		
 		// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
 		char* filename;
-		char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
 		size_t filenameSize;
+		char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
 		
 		// Search for a tab which indicates the request contains a query
 		char* tab = memchr(client->buffer, '\t', client->count);
@@ -270,14 +270,15 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Figure out the filename from the selector
 		if (selectorSize == 0)
 		{
-			// For a blank selector let's assume / was provided
-			selector = "/";
-			selectorSize = 1;
+			selector = NULL;
+			
 			filename = "./";
 			filenameSize = 2;
 		}
 		else
 		{
+			selector = client->buffer;
+			
 			// Inspect provided path for leading periods to prevent use of relative paths and access to hidden files
 			char* str_curr = client->buffer;
 			
@@ -303,23 +304,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			// Ensure that the path is relative to the document root
 			// It's okay if it already starts with a / because consecutive slashes are ignored
-			filenameBuffer[0] = '.';
-			filenameBuffer[1] = '/';
-			memcpy(filenameBuffer + 2, client->buffer, selectorSize);
-			filenameBuffer[selectorSize + 2] = '\0';
-			
 			filename = filenameBuffer;
 			filenameSize = selectorSize + 2;
 			
-			// If the provided selector did not start with /, let's say it did
-			if (filenameBuffer[2] == '/')
-			{
-				selector = filenameBuffer + 2;
-			}
-			else
-			{
-				selector = filenameBuffer + 1;
-			}
+			filenameBuffer[0] = '.';
+			filenameBuffer[1] = '/';
+			memcpy(filenameBuffer + 2, selector, selectorSize);
+			filenameBuffer[filenameSize] = '\0';
 		}
 		
 		// Try to open the requested file
@@ -358,6 +349,14 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		}
 		else if (S_ISDIR(statbuf.st_mode))
 		{
+			// Make sure directory is world executable
+			if (!(statbuf.st_mode & S_IXOTH))
+			{
+				write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+				client_disconnect(server, client);
+				return;
+			}
+			
 			// Keep track of the directory FD for CGI purposes
 			client->dirfd = client->file;
 			
@@ -414,7 +413,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				// If we don't already have a file descriptor for the containing directory, we need to figure one out from the filename
 				if (client->dirfd < 0)
 				{
-					// It shouldn't be possible for it to not find a slash given that we add one
+					// It shouldn't be possible for it to not find a slash in the filename given that we added one
 					char* slash = memrchr(filename, '/', filenameSize);
 					
 					size_t pathSize = (size_t)(slash - filename);
@@ -425,12 +424,27 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					pathName[pathSize] = '\0';
 					
 					// Try to open the directory
-					client->dirfd = openat(server->directory, pathName, O_RDONLY | O_CLOEXEC);
+					client->dirfd = openat(server->directory, pathName, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 					
 					if (client->dirfd < 0)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot open executable file directory: %s\n", getpid(), strerror(errno));
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						exit(EXIT_FAILURE);
+					}
+					
+					// Try to get file stats
+					if (fstat(client->dirfd, &statbuf) < 0)
+					{
+						fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						exit(EXIT_FAILURE);
+					}
+					
+					// If it isn't world readable or a world executable we're done
+					if (!(statbuf.st_mode & S_IROTH) || !(statbuf.st_mode & S_IXOTH))
+					{
+						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
 						exit(EXIT_FAILURE);
 					}
 				}
@@ -488,12 +502,8 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				return;
 			}
 			
-			// We don't need the file anymore since it should be off happily executing in the forked process
-			close(client->file);
-			client->file = -1;
-			
 			// Alter the events on the client socket to only handle errors
-			sepoll_mod_events(server->loop, fd, 0);
+			sepoll_mod_events(server->loop, fd, EPOLLET);
 			
 			// Add the pidfd to the event loop
 			sepoll_add(server->loop, client->pidfd, EPOLLIN, client_pidfd, server, client);
@@ -792,7 +802,7 @@ static int maxfdlimit()
 static int open_dir(const char* directory)
 {
 	// Open content directory
-	int dirfd = open(directory, O_RDONLY | O_CLOEXEC);
+	int dirfd = open(directory, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 	
 	if (dirfd < 0)
 	{
@@ -809,17 +819,17 @@ static int open_dir(const char* directory)
 		return -1;
 	}
 	
-	// Make sure it's actually a directory
-	if (!S_ISDIR(statbuf.st_mode))
-	{
-		fprintf(stderr, "%i - Error: Content path is not a directory\n", getpid());
-		return -1;
-	}
-	
 	// Make sure it's world readable
 	if (!(statbuf.st_mode & S_IROTH))
 	{
 		fprintf(stderr, "%i - Error: Content path is not world readable\n", getpid());
+		return -1;
+	}
+	
+	// Make sure it's world executable
+	if (!(statbuf.st_mode & S_IXOTH))
+	{
+		fprintf(stderr, "%i - Error: Content path is not world executable\n", getpid());
 		return -1;
 	}
 	
