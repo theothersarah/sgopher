@@ -19,6 +19,8 @@
 // getcwd, close
 #include <unistd.h>
 
+// Mapping of extension to selector type
+// Not comprehensive but at least an assortment of common and period-accurate stuff
 struct ext_entry
 {
 	char* ext;
@@ -30,6 +32,7 @@ struct ext_entry ext_table[] =
 	{"txt", '0'},
 	{"gif", 'g'},
 	{"jpg", 'I'},
+	{"jpeg", 'I'},
 	{"png", 'I'},
 	{"bmp", 'I'},
 	{"tif", 'I'},
@@ -54,12 +57,15 @@ void main()
 	char cwd[PATH_MAX];
 	getcwd(cwd, PATH_MAX);
 	
-	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is purely cosmetic
+	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is mostly cosemetic.
 	// Also makes sure the selector has a slash at the beginning and end which are also not strictly necessary,
-	// but play nice with adding the hostname and filename to the front and end respectively
+	// but play nice with adding the hostname and filename to the front and end respectively.
+	// Also makes it easier to generate the selector for the "up a level" link
 	char selector[1024];
 	selector[0] = '/';
 	selector[1] = '\0';
+	
+	int n = 0;
 	
 	char* str_curr = env_selector;
 	
@@ -80,6 +86,7 @@ void main()
 		
 		if (str_size > 0)
 		{
+			n++;
 			strncat(selector, str_curr, str_size);
 			strcat(selector, "/");
 		}
@@ -88,6 +95,21 @@ void main()
 	}
 	while (str_curr++ != NULL);
 	
+	// Header, which includes a "go up a level" link if the selector indicated a subdirectory
+	printf("iDirectory listing of %s%s\r\n", env_hostname, selector);
+	
+	if (n > 0)
+	{
+		char* slash = selector;
+		
+		for (int i = 0; i < n; i++)
+		{
+			slash = strchr(slash, '/') + 1;
+		}
+		
+		printf("1Go up a level\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port);
+	}
+	
 	// Open up a directory stream for the working directory so we can go through its files
 	DIR* directory = opendir(cwd);
 	
@@ -95,8 +117,6 @@ void main()
 	{
 		return;
 	}
-	
-	printf("iDirectory listing of %s%s\r\n", env_hostname, selector);
 	
 	struct dirent* entry;
 	
@@ -110,6 +130,7 @@ void main()
 			continue;
 		}
 		
+		// Now we have to open files to stat them
 		int file = open(filename, O_RDONLY);
 		
 		if (file < 0)
@@ -142,7 +163,7 @@ void main()
 			if (statbuf.st_mode & S_IXOTH)
 			{
 				// Treat executables as a query menu
-				// You did put a gophermap in it, right?
+				// This is probably as good a guess as any, but if it's meant to be downloaded it shouldn't be +x
 				type = '7';
 			}
 			else
@@ -175,6 +196,7 @@ void main()
 		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
 		{
 			// Treat directories as being submenus
+			// You did put a gophermap in it, right?
 			type = '1';
 		}
 		else
@@ -189,7 +211,7 @@ void main()
 		printf("%c%s\t%s\t%s\t%s\r\n", type, filename, fileSelector, env_hostname, env_port);
 	}
 	
-	printf(".\r\n");
-	
 	closedir(directory);
+	
+	printf(".\r\n");
 }
