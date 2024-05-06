@@ -169,10 +169,12 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 	struct server_state* server = userdata1;
 	struct client_state* client = userdata2;
 	
+	// Now that the process has ended we can boot the client
+	client_disconnect(server, client);
+	
+	// Now we're done with the pidfd
 	sepoll_remove(server->loop, fd);
 	close(fd);
-	
-	client_disconnect(server, client);
 }
 
 // *********************************************************************
@@ -342,21 +344,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			return;
 		}
 		
-		// Check type of file
+		// Make sure it's a regular file, or a directory that is world executable
 		if (S_ISREG(statbuf.st_mode))
 		{
 			// This space intentionally blank
 		}
-		else if (S_ISDIR(statbuf.st_mode))
+		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
 		{
-			// Make sure directory is world executable
-			if (!(statbuf.st_mode & S_IXOTH))
-			{
-				write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
-				client_disconnect(server, client);
-				return;
-			}
-			
 			// Keep track of the directory FD for CGI purposes
 			client->dirfd = client->file;
 			
@@ -466,16 +460,19 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				
 				// Environment variables
 				char env_selector[1024];
-				snprintf(env_selector, 1024, "SELECTOR=%.*s", (int)selectorSize, selector);
+				snprintf(env_selector, 1024, "SCRIPT_NAME=%.*s", (int)selectorSize, selector);
 				
 				char env_query[1024];
-				snprintf(env_query, 1024, "QUERY=%.*s", (int)querySize, query);
+				snprintf(env_query, 1024, "QUERY_STRING=%.*s", (int)querySize, query);
 				
 				char env_hostname[1024];
-				snprintf(env_hostname, 1024, "HOSTNAME=%s", server->params->hostname);
+				snprintf(env_hostname, 1024, "SERVER_NAME=%s", server->params->hostname);
 				
 				char env_port[1024];
-				snprintf(env_port, 1024, "PORT=%hu", server->params->port);
+				snprintf(env_port, 1024, "SERVER_PORT=%hu", server->params->port);
+				
+				char env_address[1024];
+				snprintf(env_address, 1024, "REMOTE_ADDR=%s", client->address);
 				
 				char* envp[] =
 				{
@@ -483,6 +480,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					env_query,
 					env_hostname,
 					env_port,
+					env_address,
 					NULL
 				};
 				
@@ -694,7 +692,7 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 {
 	struct server_state* server = userdata1;
 	
-	// Have to read 8 bytes from the timer even if I don't care about it
+	// Have to read 8 bytes from the timer to reset it even if I don't care about the contents
 	uint64_t buffer;
 	
 	if (read(fd, &buffer, sizeof(uint64_t)) != sizeof(uint64_t))
@@ -713,6 +711,7 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 		
 		if (client->pidfd >= 0)
 		{
+			// We don't have timestamps for CGI process interactions so we need to spy on the TCP connection information
 			struct tcp_info tcp_info;
 			socklen_t tcp_info_length = sizeof(struct tcp_info);
 			
@@ -902,6 +901,7 @@ static int open_socket(unsigned short port)
 // *********************************************************************
 static int open_sigfd()
 {
+	// Block the signals we're interested in so that the signalfd can handle them
 	sigset_t mask;
 	
 	sigemptyset(&mask);
@@ -913,6 +913,7 @@ static int open_sigfd()
 		return -1;
 	}
 	
+	// Open the signalfd to handle the blocked signals
 	int sigfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
 	
 	if (sigfd < 0)
@@ -929,6 +930,7 @@ static int open_sigfd()
 // *********************************************************************
 static int open_timerfd(time_t interval)
 {
+	// Open the timerfd
 	int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
 	
 	if (timerfd < 0)
@@ -937,6 +939,7 @@ static int open_timerfd(time_t interval)
 		return -1;
 	}
 	
+	// Set the timer interval to the client timeout period
 	struct itimerspec timer =
 	{
 		.it_interval =
@@ -1037,29 +1040,28 @@ int doserver(struct server_params* params)
 	{
 		struct client_state* next = LIST_NEXT(client, entry);
 		
-		//
+		// Kill CGI process, if any
 		if (client->pidfd >= 0)
 		{
 			pidfd_kill(client->pidfd);
 			close(client->pidfd);
 		}
 		
-		// Deal with the open file, if any
+		// Close the open file, if any
 		if (client->file >= 0)
 		{
 			close(client->file);
 		}
 		
-		// Deal with the open file, if any
+		// Close the open directory, if any
 		if (client->dirfd >= 0)
 		{
 			close(client->dirfd);
 		}
 		
-		// Deal with the socket
+		// Close the socket
 		close(client->socket);
 		
-		//
 		free(client);
 		
 		client = next;
