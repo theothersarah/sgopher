@@ -232,31 +232,36 @@ int main()
 	
 	int n = 0;
 	
-	char* str_curr = env_selector;
-	
-	while (str_curr++ != NULL)
+	// Should only inspect the string if it is not null and has a non-zero length
+	if (env_selector != NULL && env_selector[0] != '\0')
 	{
-		char* slash = strchr(str_curr, '/');
+		char* str_curr = env_selector;
 		
-		size_t str_size;
-		
-		if (slash == NULL)
+		do
 		{
-			str_size = strlen(str_curr);
+			char* slash = strchr(str_curr, '/');
+			
+			size_t str_size;
+			
+			if (slash == NULL)
+			{
+				str_size = strlen(str_curr);
+			}
+			else
+			{
+				str_size = (size_t)(slash - str_curr);
+			}
+			
+			if (str_size > 0)
+			{
+				n++;
+				strncat(selector, str_curr, str_size);
+				strcat(selector, "/");
+			}
+			
+			str_curr = slash;
 		}
-		else
-		{
-			str_size = (size_t)(slash - str_curr);
-		}
-		
-		if (str_size > 0)
-		{
-			n++;
-			strncat(selector, str_curr, str_size);
-			strcat(selector, "/");
-		}
-		
-		str_curr = slash;
+		while (str_curr++ != NULL);
 	}
 	
 	// This is the root of a tree that contains all the accepted filenames
