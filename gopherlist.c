@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 // Output gather buffers used to limit number of writes
+// Intended to gather a bunch of formatted strings made by snprintf for a single writev call
 // Yes this is a whole megabyte that is unlikely to be close to fully used,
 // no I don't care because it's 2024
 #define BUFFERSIZE 1024
@@ -40,22 +41,10 @@ char buffer[UIO_MAXIOV][BUFFERSIZE];
 struct iovec iov[UIO_MAXIOV];
 int idx = 0;
 
-void buffer_push(int size)
+// If there's anything in the buffer, write it out
+void buffer_flush()
 {
-	// snprintf can return larger than BUFFERSIZE but never actually writes more than that
-	// If this happens the output would be mangled but at least it wouldn't be a buffer overflow
-	if (size > BUFFERSIZE)
-	{
-		size = BUFFERSIZE;
-	}
-	
-	iov[idx].iov_base = buffer[idx];
-	iov[idx].iov_len = size;
-	
-	// After increment idx indicates number of filled iov entries, so flush the buffers if it's full
-	idx++;
-	
-	if (idx >= UIO_MAXIOV)
+	if (idx > 0)
 	{
 		if (writev(STDOUT_FILENO, iov, idx) < 0)
 		{
@@ -63,6 +52,32 @@ void buffer_push(int size)
 		}
 		
 		idx = 0;
+	}
+}
+
+// Update the io vectors and index to acknowledge something of length size being placed in buffer[idx]
+void buffer_push(int size)
+{
+	// snprintf can return larger than BUFFERSIZE but never actually writes more than that
+	// If this happens the output would be mangled but at least it wouldn't be a buffer overflow
+	if (size < 0)
+	{
+		return;
+	}
+	else if (size > BUFFERSIZE)
+	{
+		size = BUFFERSIZE;
+	}
+	
+	iov[idx].iov_base = buffer[idx];
+	iov[idx].iov_len = (size_t)size;
+	
+	// After increment idx indicates number of filled iov entries, so flush the buffers if it's full
+	idx++;
+	
+	if (idx >= UIO_MAXIOV)
+	{
+		buffer_flush();
 	}
 }
 
@@ -85,6 +100,8 @@ struct ext_entry
 struct ext_entry ext_table[] =
 {
 	{"txt", '0'},
+	{"c", '0'},
+	{"h", '0'},
 	{"gif", 'g'},
 	{"jpg", 'I'},
 	{"jpeg", 'I'},
@@ -96,14 +113,16 @@ struct ext_entry ext_table[] =
 	{NULL, '\0'}
 };
 
-//
+// This is called by the tree traversal to handle each filename that had been placed in the tree
 void process_filename(const void* node, VISIT which, void* closure)
 {
+	// Want to handle them in sort order
 	if (which == preorder || which == endorder)
 	{
 		return;
 	}
 	
+	// Convert arguments into useful variables
 	const char* filename = *(char**)node;
 	struct tree_args* args = (struct tree_args*)closure;
 	
@@ -193,8 +212,8 @@ static int compare_strings(const void* pa, const void* pb)
 	return (strcmp(pa, pb));
 }
 
-// Main
-void main()
+// Main function
+int main()
 {
 	// Get the environment variables we need
 	// It's fine if they are null, too, even if it would generate a non-functional menu
@@ -205,7 +224,9 @@ void main()
 	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is mostly cosmetic.
 	// Also makes sure the selector has a slash at the beginning and end which are also not strictly necessary,
 	// but play nice with adding the hostname and filename to the front and end respectively.
-	// Also makes it easier to generate the selector for the "up a level" link
+	// Also makes it easier to generate the selector for the "up a level" link.
+	// The passed selector from sgopher should not exceed 510 bytes so extra room is allocated and no length
+	// checking should be necessary
 	char selector[1024];
 	strcpy(selector, "/");
 	
@@ -247,7 +268,7 @@ void main()
 	if (directory == NULL)
 	{
 		fprintf(stderr, "%i (gopherlist) - Error: Cannot opendir: %s\n", getpid(), strerror(errno));
-		return;
+		exit(EXIT_FAILURE);
 	}
 	
 	struct dirent* entry;
@@ -267,7 +288,7 @@ void main()
 		if (filename == NULL)
 		{
 			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
-			return;
+			exit(EXIT_FAILURE);
 		}
 		
 		strcpy(filename, entry->d_name);
@@ -276,7 +297,7 @@ void main()
 		if (tsearch(filename, &filenames, compare_strings) == NULL)
 		{
 			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for tree node\n", getpid());
-			return;
+			exit(EXIT_FAILURE);
 		}
 	}
 	
@@ -314,12 +335,8 @@ void main()
 	// Add the footer
 	buffer_push(snprintf(buffer[idx], BUFFERSIZE, ".\r\n"));
 	
-	// There might not be anything remaining to be written if the buffer had exactly UIO_MAXIOV entries added and was flushed previously
-	if (idx > 0)
-	{
-		if (writev(STDOUT_FILENO, iov, idx) < 0)
-		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot writev: %s\n", getpid(), strerror(errno));
-		}
-	}
+	// Output anything remaining
+	buffer_flush();
+	
+	exit(EXIT_SUCCESS);
 }

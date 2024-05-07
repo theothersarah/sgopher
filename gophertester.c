@@ -78,12 +78,12 @@ static struct argp_option argp_options[] =
 struct arguments
 {
 	char* address;
-	int duration;
+	unsigned int duration;
 	unsigned short port;
 	char* request;
-	int size;
+	unsigned int size;
 	int timeout;
-	int workers;
+	unsigned int workers;
 };
 
 // Argp option parser
@@ -97,7 +97,7 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 		args->address = arg;
 		break;
 	case KEY_DURATION:
-		sscanf(arg, "%i", &args->duration);
+		sscanf(arg, "%u", &args->duration);
 		break;
 	case KEY_PORT:
 		sscanf(arg, "%hu", &args->port);
@@ -106,13 +106,13 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 		args->request = arg;
 		break;
 	case KEY_SIZE:
-		sscanf(arg, "%i", &args->size);
+		sscanf(arg, "%u", &args->size);
 		break;
 	case KEY_TIMEOUT:
 		sscanf(arg, "%i", &args->timeout);
 		break;
 	case KEY_WORKERS:
-		sscanf(arg, "%i", &args->workers);
+		sscanf(arg, "%u", &args->workers);
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -211,7 +211,7 @@ void cleanup()
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
+int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 {
 	// Initialize success counter in shared memory
 	results[id].total = 0;
@@ -234,7 +234,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 		}
 	};
 	
-	ssize_t requestSize = request[0].iov_len + request[1].iov_len;
+	ssize_t requestSize = (ssize_t)(request[0].iov_len + request[1].iov_len);
 	
 	// Set up socket address
 	struct sockaddr_in addr = 
@@ -267,13 +267,13 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 	
 	if (timerfd < 0)
 	{
-		fprintf(stderr, "Error: Worker #%i cannot create timerfd: %s\n", id, strerror(errno));
+		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %s\n", id, strerror(errno));
 		return -1;
 	}
 	
 	if (timerfd_settime(timerfd, 0, &timer, NULL) < 0)
 	{
-		fprintf(stderr, "Error: Worker #%i cannot set timerfd time: %s\n", id, strerror(errno));
+		fprintf(stderr, "Error: Worker #%u cannot set timerfd time: %s\n", id, strerror(errno));
 		return -1;
 	}
 	
@@ -296,7 +296,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 		
 		if (sockfd < 0)
 		{
-			fprintf(stderr, "Error: Worker #%i cannot open socket: %s\n", id, strerror(errno));
+			fprintf(stderr, "Error: Worker #%u cannot open socket: %s\n", id, strerror(errno));
 			return -1;
 		}
 		
@@ -306,7 +306,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 			// The socket is nonblocking so it should return EINPROGRESS
 			if (errno != EINPROGRESS)
 			{
-				fprintf(stderr, "Error: Worker #%i cannot connect to server: %s\n", id, strerror(errno));
+				fprintf(stderr, "Error: Worker #%u cannot connect to server: %s\n", id, strerror(errno));
 				return -1;
 			}
 		}
@@ -322,7 +322,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 			
 			if (n < 0)
 			{
-				fprintf(stderr, "Error: Worker #%i cannot poll FDs: %s\n", id, strerror(errno));
+				fprintf(stderr, "Error: Worker #%u cannot poll FDs: %s\n", id, strerror(errno));
 				return -1;
 			}
 			else if (n == 0)
@@ -330,7 +330,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 				// Report a timeout only the first time it happens and then score it
 				if (results[id].timeout == 0)
 				{
-					fprintf(stderr, "Warning: Worker #%i timed out\n", id);
+					fprintf(stderr, "Warning: Worker #%u timed out\n", id);
 				}
 				
 				results[id].timeout++;
@@ -355,13 +355,13 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 				
 				if (n < 0)
 				{
-					fprintf(stderr, "Error: Worker #%i cannot write to socket: %s\n", id, strerror(errno));
+					fprintf(stderr, "Error: Worker #%u cannot write to socket: %s\n", id, strerror(errno));
 					return -1;
 				}
 				else if (n != requestSize)
 				{
 					// The request should be small enough to send the full string in one go so something is wrong if not
-					fprintf(stderr, "Error: Worker #%i cannot write full request string\n", id);
+					fprintf(stderr, "Error: Worker #%u cannot write full request string\n", id);
 					return -1;
 				}
 				
@@ -384,7 +384,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 						}
 						else
 						{
-							fprintf(stderr, "Error: Worker #%i cannot read socket: %s\n", id, strerror(errno));
+							fprintf(stderr, "Error: Worker #%u cannot read socket: %s\n", id, strerror(errno));
 							return -1;
 						}
 					}
@@ -396,7 +396,7 @@ int process(int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
 							// Report a size mismatch only the first time it happens and then score it
 							if (results[id].mismatch == 0)
 							{
-								fprintf(stderr, "Warning: Worker #%i size mismatch\n", id);
+								fprintf(stderr, "Warning: Worker #%u size mismatch\n", id);
 							}
 							
 							results[id].mismatch++;
@@ -479,7 +479,7 @@ int main(int argc, char* argv[])
 	}
 	
 	// Spawn worker processes
-	for (int i = 0; i < args.workers; i++)
+	for (unsigned int i = 0; i < args.workers; i++)
 	{
 		pid_t pid = fork();
 	
@@ -529,7 +529,7 @@ int main(int argc, char* argv[])
 	while (pid = wait(&status), pid > 0)
 	{
 		// Search process table to find out which worker had just exited
-		for (int i = 0; i < args.workers; i++)
+		for (unsigned int i = 0; i < args.workers; i++)
 		{
 			if (results[i].pid == pid)
 			{
@@ -556,7 +556,7 @@ int main(int argc, char* argv[])
 	
 	int count = 0;
 	
-	for (int i = 0; i < args.workers; i++)
+	for (unsigned int i = 0; i < args.workers; i++)
 	{
 		if (results[i].status == 0)
 		{

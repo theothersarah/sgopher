@@ -1,13 +1,24 @@
 CC = gcc
-CFLAGS = -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wconversion -Ofast
+CFLAGS = -D_FORTIFY_SOURCE=2 -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-unused-result -Wconversion -O3
 LDFLAGS = 
-OBJFILES = main.o server.o sepoll.o sfork.o
-TARGET = sgopher
 
-all: $(TARGET)
+sgopher_OBJFILES = main.o server.o sepoll.o sfork.o
+gophertester_OBJFILES = gophertester.o
+gopherlist_OBJFILES = gopherlist.o
 
-$(TARGET): $(OBJFILES)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJFILES) $(LDFLAGS)
+OBJFILES = $(sgopher_OBJFILES) $(gophertester_OBJFILES) $(gopherlist_OBJFILES)
+TARGETS = sgopher gophertester gopherlist
+
+all: $(TARGETS)
+
+sgopher: $(sgopher_OBJFILES)
+	$(CC) $(CFLAGS) -o $@ $(sgopher_OBJFILES) $(LDFLAGS)
+
+gophertester: $(gophertester_OBJFILES)
+	$(CC) $(CFLAGS) -o $@ $(gophertester_OBJFILES) $(LDFLAGS)
+
+gopherlist: $(gopherlist_OBJFILES)
+	$(CC) $(CFLAGS) -o $@ $(gopherlist_OBJFILES) $(LDFLAGS)
 
 clean:
-	rm -f $(OBJFILES) $(TARGET)
+	rm -f $(OBJFILES) $(TARGETS)

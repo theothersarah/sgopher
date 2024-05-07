@@ -451,6 +451,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				};
 				
 				// Environment variables
+				// 1024 bytes should be more than generous and exceeding it will just cut it off
 				char env_selector[1024];
 				snprintf(env_selector, 1024, "SCRIPT_NAME=%.*s", (int)selectorSize, selector);
 				
