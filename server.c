@@ -21,7 +21,7 @@
 // malloc, free
 #include <stdlib.h>
 
-// strerror, memcpy, memchr, memmem, memrchr
+// strerror, memchr, memmem, strcpy, strncat, strrchr
 #include <string.h>
 
 // pidfd_send_signal
@@ -240,9 +240,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		size_t querySize;
 		
 		// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
-		char* filename;
-		size_t filenameSize;
-		char filenameBuffer[MAX_REQUEST_SIZE - 2 + 3];
+		char filename[MAX_REQUEST_SIZE - 2 + 3];
 		
 		// Search for a tab which indicates the request contains a query
 		char* tab = memchr(client->buffer, '\t', client->count);
@@ -274,8 +272,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		{
 			selector = NULL;
 			
-			filename = "./";
-			filenameSize = 2;
+			strcpy(filename, "./");
 		}
 		else
 		{
@@ -306,13 +303,8 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			// Ensure that the path is relative to the document root
 			// It's okay if it already starts with a / because consecutive slashes are ignored
-			filename = filenameBuffer;
-			filenameSize = selectorSize + 2;
-			
-			filenameBuffer[0] = '.';
-			filenameBuffer[1] = '/';
-			memcpy(filenameBuffer + 2, selector, selectorSize);
-			filenameBuffer[filenameSize] = '\0';
+			strcpy(filename, "./");
+			strncat(filename, selector, selectorSize);
 		}
 		
 		// Try to open the requested file
@@ -348,6 +340,8 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		if (S_ISREG(statbuf.st_mode))
 		{
 			// This space intentionally blank
+			// At this point we could process the filename string to determine the containing directory path,
+			// but since that's only relevant to CGI we wait until after the fork to do it to avoid doing it if we don't have to
 		}
 		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
 		{
@@ -408,17 +402,15 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (client->dirfd < 0)
 				{
 					// It shouldn't be possible for it to not find a slash in the filename given that we added one
-					char* slash = memrchr(filename, '/', filenameSize);
+					char* slash = strrchr(filename, '/');
 					
-					size_t pathSize = (size_t)(slash - filename);
+					// Extract everything up to the last slash as a string
+					char path[1024];
+					path[0] = '\0';
+					strncat(path, filename, (size_t)(slash - filename));
 					
-					char pathName[1024];
-					
-					memcpy(pathName, filename, pathSize);
-					pathName[pathSize] = '\0';
-					
-					// Try to open the directory
-					client->dirfd = openat(server->directory, pathName, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
+					// Try to open the path
+					client->dirfd = openat(server->directory, path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 					
 					if (client->dirfd < 0)
 					{
@@ -427,7 +419,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 						exit(EXIT_FAILURE);
 					}
 					
-					// Try to get file stats
+					// Try to get stats of the directory
 					if (fstat(client->dirfd, &statbuf) < 0)
 					{
 						fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
@@ -500,6 +492,10 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				return;
 			}
 			
+			// There's no need for the client's file to be open at this point
+			close(client->file);
+			client->file = -1;
+			
 			// Alter the events on the client socket to only handle errors
 			sepoll_mod_events(server->loop, fd, EPOLLET);
 			
@@ -511,6 +507,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// Otherwise, transmit the file
 			client->filesize = statbuf.st_size;
 			sepoll_mod_events(server->loop, fd, EPOLLOUT | EPOLLET);
+		}
+		
+		// If we opened a directory, it's no longer needed now
+		if (client->dirfd >= 0)
+		{
+			close(client->dirfd);
+			client->dirfd = -1;
 		}
 		
 		// Update timestamp

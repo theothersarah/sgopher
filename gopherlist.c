@@ -57,7 +57,7 @@ void main()
 	char cwd[PATH_MAX];
 	getcwd(cwd, PATH_MAX);
 	
-	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is mostly cosemetic.
+	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is mostly cosmetic.
 	// Also makes sure the selector has a slash at the beginning and end which are also not strictly necessary,
 	// but play nice with adding the hostname and filename to the front and end respectively.
 	// Also makes it easier to generate the selector for the "up a level" link
@@ -95,7 +95,7 @@ void main()
 	}
 	while (str_curr++ != NULL);
 	
-	// Header, which includes a "go up a level" link if the selector indicated a subdirectory
+	// Header, which includes a "parent directory" link if the selector indicated a subdirectory
 	printf("iDirectory listing of %s%s\r\n", env_hostname, selector);
 	
 	if (n > 0)
@@ -107,10 +107,12 @@ void main()
 			slash = strchr(slash, '/') + 1;
 		}
 		
-		printf("1Go up a level\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port);
+		printf("1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port);
 	}
 	
-	// Open up a directory stream for the working directory so we can go through its files
+	printf("i\r\n");
+	
+	// Open a directory stream for the working directory so we can go through its files
 	DIR* directory = opendir(cwd);
 	
 	if (directory == NULL)
