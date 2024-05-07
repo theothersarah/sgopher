@@ -25,57 +25,60 @@
 // fstat
 #include <sys/stat.h>
 
-// writev
-#include <sys/uio.h>
-
-// close, getpid
+// write, close, getpid
 #include <unistd.h>
 
-// Output gather buffers used to limit number of writes
-// Intended to gather a bunch of formatted strings made by snprintf for a single writev call
-// Yes this is a whole megabyte that is unlikely to be close to fully used,
-// no I don't care because it's 2024
-#define BUFFERSIZE 1024
+// Buffering for several snprintf calls to limit the number of writes performed
+#define BUFFERSIZE 65536
+#define BUFFER_BUFFER 1024
 
-char buffer[UIO_MAXIOV][BUFFERSIZE];
-struct iovec iov[UIO_MAXIOV];
-int idx = 0;
+char buffer[BUFFERSIZE];
+char* buffer_pos = buffer;
+size_t buffer_cnt = 0;
+size_t buffer_rem = BUFFERSIZE;
 
 // If there's anything in the buffer, write it out
 void buffer_flush()
 {
-	if (idx > 0)
+	if (buffer_cnt > 0)
 	{
-		if (writev(STDOUT_FILENO, iov, idx) < 0)
+		do
 		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot writev: %s\n", getpid(), strerror(errno));
+			ssize_t cnt = write(STDOUT_FILENO, buffer, buffer_cnt);
+			
+			if (cnt < 0)
+			{
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
+				exit(EXIT_FAILURE);
+			}
+			
+			buffer_cnt -= (size_t)cnt;
 		}
+		while(buffer_cnt > 0);
 		
-		idx = 0;
+		buffer_pos = buffer;
+		buffer_cnt = 0;
+		buffer_rem = BUFFERSIZE;
 	}
 }
 
-// Update the io vectors and index to acknowledge something of length size being placed in buffer[idx]
+// Acknowledge the results of the snprintf call and update position and count, and flush the buffer if it gets too full
 void buffer_push(int size)
 {
-	// snprintf can return larger than BUFFERSIZE but never actually writes more than that
-	// If this happens the output would be mangled but at least it wouldn't be a buffer overflow
 	if (size < 0)
 	{
 		return;
 	}
-	else if (size > BUFFERSIZE)
+	else if ((size_t)size > buffer_rem)
 	{
-		size = BUFFERSIZE;
+		return;
 	}
 	
-	iov[idx].iov_base = buffer[idx];
-	iov[idx].iov_len = (size_t)size;
+	buffer_pos += size;
+	buffer_cnt += (size_t)size;
+	buffer_rem -= (size_t)size;
 	
-	// After increment idx indicates number of filled iov entries, so flush the buffers if it's full
-	idx++;
-	
-	if (idx >= UIO_MAXIOV)
+	if (buffer_rem < BUFFER_BUFFER)
 	{
 		buffer_flush();
 	}
@@ -203,7 +206,7 @@ void process_filename(const void* node, VISIT which, void* closure)
 	}
 	
 	// Build the menu line
-	buffer_push(snprintf(buffer[idx], BUFFERSIZE, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, args->selector, filename, args->hostname, args->port));
+	buffer_push(snprintf(buffer_pos, buffer_rem, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, args->selector, filename, args->hostname, args->port));
 }
 
 // Tree search string compare
@@ -309,7 +312,7 @@ int main()
 	closedir(directory);
 	
 	// Build header, which includes a "parent directory" link if the selector indicated a subdirectory
-	buffer_push(snprintf(buffer[idx], BUFFERSIZE, "iDirectory listing of %s%s\r\n", env_hostname, selector));
+	buffer_push(snprintf(buffer_pos, buffer_rem, "iDirectory listing of %s%s\r\n", env_hostname, selector));
 	
 	if (n > 0)
 	{
@@ -320,10 +323,10 @@ int main()
 			slash = strchr(slash, '/') + 1;
 		}
 		
-		buffer_push(snprintf(buffer[idx], BUFFERSIZE, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
+		buffer_push(snprintf(buffer_pos, buffer_rem, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
 	}
 	
-	buffer_push(snprintf(buffer[idx], BUFFERSIZE, "i\r\n"));
+	buffer_push(snprintf(buffer_pos, buffer_rem, "i\r\n"));
 	
 	// Traverse the tree to add menu lines to the buffer and then destroy it
 	struct tree_args args =
@@ -338,7 +341,7 @@ int main()
 	tdestroy(filenames, free);
 	
 	// Add the footer
-	buffer_push(snprintf(buffer[idx], BUFFERSIZE, ".\r\n"));
+	buffer_push(snprintf(buffer_pos, buffer_rem, ".\r\n"));
 	
 	// Output anything remaining
 	buffer_flush();
