@@ -6,12 +6,12 @@ sgopher is my personal attempt at a Gopher protocol server that is capable of a 
 ## Configuration
 sgopher is configured entirely with command line options. It accepts the following options:
 
--d, --directory=STRING     Location to serve files from. Defaults to ./gopherroot
--h, --hostname=STRING      Externally-accessible hostname of server for generation of gophermaps. Defaults to localhost
--i, --indexfile=STRING     Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap
--m, --maxclients=NUMBER    Maximum simultaneous clients per worker process. Defaults to 4096
--p, --port=NUMBER          Network port. Defaults to 70
--t, --timeout=NUMBER       Time in seconds before booting inactive client. Defaults to 10
+-d, --directory=STRING     Location to serve files from. Defaults to ./gopherroot  
+-h, --hostname=STRING      Externally-accessible hostname of server for generation of gophermaps. Defaults to localhost  
+-i, --indexfile=STRING     Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap  
+-m, --maxclients=NUMBER    Maximum simultaneous clients per worker process. Defaults to 4096  
+-p, --port=NUMBER          Network port. Defaults to 70  
+-t, --timeout=NUMBER       Time in seconds before booting inactive client. Defaults to 10  
 -w, --workers=NUMBER       Number of worker processes. Defaults to 1
 
 sgopher currently contains no provisions for logging or throttling. Errors are reported via stderr.
@@ -29,17 +29,19 @@ Note: sgopher insists that valid requests to end with a CRLF sequence as stated 
 Executable files, scripts or binaries, are not served directly by sgopher. They are executed in a forked process similar to HTTP's CGI standard.
 
 CGI programs are executed with the following file descriptors:
-0 (stdin): /dev/null
-1 (stdout): client socket
+
+0 (stdin): /dev/null  
+1 (stdout): client socket  
 2 (stderr): The stderr of the server process, for error logging
 
 Additionally, there will be an open file descriptor referring to the executable file itself. This is present due to a limitation of the fexecve function - if the executable file is a script with a shebang line, it will only execute correctly if the file is NOT marked CLOEXEC, so it persists.
 
 The following environmental variables are provided, mimicking some of the CGI standard:
-SCRIPT_NAME - the selector that was provided and resulted in the execution of this file.
-QUERY_STRING - if the selector string included a query separated from the selector string by a tab, as per Gopher's menu type 7, it will be present in this variable.
-SERVER_NAME - hostname of the server as provided via a command line option.
-SERVER_PORT - port of the server.
+
+SCRIPT_NAME - the selector that was provided and resulted in the execution of this file.  
+QUERY_STRING - if the selector string included a query separated from the selector string by a tab, as per Gopher's menu type 7, it will be present in this variable.  
+SERVER_NAME - hostname of the server as provided via a command line option.  
+SERVER_PORT - port of the server.  
 REMOTE_ADDR - client's address.
 
 See the gopherlist source for an example of some of this functionality.
@@ -51,12 +53,12 @@ This benchmark tool hammers a Gopher server as fast as it can, using one concurr
 
 It takes the following command line options:
 
--a, --address=STRING       Address of echo server (default 127.0.0.1)
--d, --duration=NUMBER      Duration of test in seconds (default 60)
--p, --port=NUMBER          Network port to use (default 8080)
--r, --request=STRING       Request string (default /)
--s, --size=NUMBER          Expected size of response in bytes (default 0 - do not check size)
--t, --timeout=NUMBER       Time to wait for socket state change before giving up in milliseconds (default 1000)
+-a, --address=STRING       Address of echo server (default 127.0.0.1)  
+-d, --duration=NUMBER      Duration of test in seconds (default 60)  
+-p, --port=NUMBER          Network port to use (default 8080)  
+-r, --request=STRING       Request string (default /)  
+-s, --size=NUMBER          Expected size of response in bytes (default 0 - do not check size)  
+-t, --timeout=NUMBER       Time to wait for socket state change before giving up in milliseconds (default 1000)  
 -w, --workers=NUMBER       Number of worker processes (default 1)
 
 Note that it automatically appends CRLF to the request string, so you do not need to include that in the string passed to the --request option. For best results, use a large number of workers to maximize concurrent requests.
