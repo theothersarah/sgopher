@@ -7,9 +7,6 @@
 // errno
 #include <errno.h>
 
-// open
-#include <fcntl.h>
-
 // tsearch, twalk_r, tdestroy
 #include <search.h>
 
@@ -22,20 +19,20 @@
 // strerror, strcpy, strchr, strlen, strncat, strcat, strrchr, strcmp
 #include <string.h>
 
-// fstat
+// stat
 #include <sys/stat.h>
 
-// write, close, getpid
+// write, getpid
 #include <unistd.h>
 
 // Buffering for several snprintf calls to limit the number of writes performed
-#define BUFFERSIZE 65536
-#define BUFFER_BUFFER 1024
+#define BUFFER_SIZE 65536
+#define BUFFER_BUFFER 4096
 
-char buffer[BUFFERSIZE];
+char buffer[BUFFER_SIZE];
 char* buffer_pos = buffer;
 size_t buffer_cnt = 0;
-size_t buffer_rem = BUFFERSIZE;
+size_t buffer_rem = BUFFER_SIZE;
 
 // If there's anything in the buffer, write it out
 void buffer_flush()
@@ -58,7 +55,7 @@ void buffer_flush()
 		
 		buffer_pos = buffer;
 		buffer_cnt = 0;
-		buffer_rem = BUFFERSIZE;
+		buffer_rem = BUFFER_SIZE;
 	}
 }
 
@@ -71,6 +68,8 @@ void buffer_push(int size)
 	}
 	else if ((size_t)size > buffer_rem)
 	{
+		fprintf(stderr, "%i (gopherlist) - Warning: Discarded snprintf result due to size\n", getpid());
+		buffer_flush();
 		return;
 	}
 	
@@ -129,25 +128,14 @@ void process_filename(const void* node, VISIT which, void* closure)
 	const char* filename = *(char**)node;
 	struct tree_args* args = (struct tree_args*)closure;
 	
-	// Now we have to open files to stat them
-	int file = open(filename, O_RDONLY | O_PATH);
-	
-	if (file < 0)
-	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot open %s : %s\n", getpid(), filename, strerror(errno));
-		return;
-	}
-	
+	// Get the file stats
 	struct stat statbuf;
 	
-	if (fstat(file, &statbuf) < 0)
+	if (stat(filename, &statbuf) < 0)
 	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot fstat %s: %s\n", getpid(), filename, strerror(errno));
-		close(file);
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot stat %s: %s\n", getpid(), filename, strerror(errno));
 		return;
 	}
-	
-	close(file);
 	
 	// Make sure it's world readable
 	if (!(statbuf.st_mode & S_IROTH))
