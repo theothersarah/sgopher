@@ -7,7 +7,7 @@
 // snprintf, fprintf
 #include <stdio.h>
 
-// atexit, getenv, malloc, calloc, reallocarray, free, qsort
+// atexit, getenv, malloc, calloc, reallocarray, free, qsort, bsearch
 #include <stdlib.h>
 
 // strerror, strcpy, strchr, strlen, strncat, strcat, strrchr, strcmp
@@ -105,8 +105,8 @@ void snbuffer_push(struct snbuffer* buf, size_t leftover, int size)
 }
 
 // List of filenames to be freed on exit
-size_t filenames_count = 0;
-char** filenames = NULL;
+static size_t filenames_count = 0;
+static char** filenames = NULL;
 
 void cleanup()
 {
@@ -121,7 +121,7 @@ void cleanup()
 	}
 }
 
-// String compare for qsort for rough alphabetical order
+// Comparison function for filename list
 static int compare_strings(const void* pa, const void* pb)
 {
 	return strcmp(*((const char**)pa), *((const char**)pb));
@@ -135,21 +135,30 @@ struct ext_entry
 };
 
 // Not comprehensive but at least an assortment of common and period-accurate stuff
-const struct ext_entry ext_table[] =
+// This must be pre-sorted according to strcmp rules for bsearch
+static const struct ext_entry ext_table[] =
 {
-	{"txt", '0'},
-	{"c", '0'},
-	{"h", '0'},
-	{"gif", 'g'},
-	{"jpg", 'I'},
-	{"jpeg", 'I'},
-	{"png", 'I'},
 	{"bmp", 'I'},
+	{"c", '0'},
+	{"gif", 'g'},
+	{"h", '0'},
+	{"jpeg", 'I'},
+	{"jpg", 'I'},
+	{"pcx", 'I'},
+	{"png", 'I'},
 	{"tif", 'I'},
 	{"tiff", 'I'},
-	{"pcx", 'I'},
-	{NULL, '\0'}
+	{"txt", '0'}
 };
+
+// Comparison function for the file extension list
+static int compare_ext_entry(const void* pa, const void* pb)
+{
+	const struct ext_entry* entry1 = pa;
+	const struct ext_entry* entry2 = pb;
+	
+	return strcmp(entry1->ext, entry2->ext);
+}
 
 // Main function
 int main()
@@ -340,18 +349,17 @@ int main()
 					// Advance past the period
 					extension++;
 					
-					// Go through the list until a match is found, or not
-					const struct ext_entry* curr_ext = ext_table;
-					
-					while (curr_ext->ext != NULL)
+					// Search the table for a match
+					struct ext_entry key =
 					{
-						if (strcmp(extension, curr_ext->ext) == 0)
-						{
-							type = curr_ext->type;
-							break;
-						}
-						
-						curr_ext++;
+						.ext = extension
+					};
+					
+					const struct ext_entry* found = bsearch(&key, ext_table, sizeof(ext_table)/sizeof(struct ext_entry), sizeof(struct ext_entry), compare_ext_entry);
+					
+					if (found != NULL)
+					{
+						type = found->type;
 					}
 				}
 			}
