@@ -1,19 +1,13 @@
-// for twalk_r and tdestroy
-#define _GNU_SOURCE
-
 // opendir, readdir, closedir
 #include <dirent.h>
 
 // errno
 #include <errno.h>
 
-// tsearch, twalk_r, tdestroy
-#include <search.h>
-
 // snprintf, fprintf
 #include <stdio.h>
 
-// getenv, malloc, free
+// atexit, getenv, malloc, calloc, reallocarray, free, qsort
 #include <stdlib.h>
 
 // strerror, strcpy, strchr, strlen, strncat, strcat, strrchr, strcmp
@@ -26,80 +20,122 @@
 #include <unistd.h>
 
 // Buffering for several snprintf calls to limit the number of writes performed
-#define BUFFER_SIZE 65536
+#define BUFFER_LENGTH 65536
 #define BUFFER_BUFFER 4096
 
-char buffer[BUFFER_SIZE];
-char* buffer_pos = buffer;
-size_t buffer_cnt = 0;
-size_t buffer_rem = BUFFER_SIZE;
-
-// If there's anything in the buffer, write it out
-void buffer_flush()
+struct snbuffer
 {
-	if (buffer_cnt > 0)
+	int fd;
+	
+	char* base;
+	size_t len;
+	
+	char* pos;
+	size_t size;
+};
+
+static inline void snbuffer_setup(struct snbuffer* buf, int fd, char* base, size_t len)
+{
+	buf->fd = fd;
+	
+	buf->base = base;
+	buf->len = len;
+	
+	buf->pos = base;
+	buf->size = len;
+}
+
+void snbuffer_flush(struct snbuffer* buf)
+{
+	size_t count = (size_t)(buf->pos - buf->base);
+	
+	if (count > 0)
 	{
+		// Potentially requires multiple writes especially if the FD is a socket
+		char* from = buf->base;
+		
 		do
 		{
-			ssize_t cnt = write(STDOUT_FILENO, buffer, buffer_cnt);
+			ssize_t n = write(buf->fd, from, count);
 			
-			if (cnt < 0)
+			if (n < 0)
 			{
 				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
 				exit(EXIT_FAILURE);
 			}
 			
-			buffer_cnt -= (size_t)cnt;
+			count -= (size_t)n;
+			from += n;
 		}
-		while(buffer_cnt > 0);
+		while(count > 0);
 		
-		buffer_pos = buffer;
-		buffer_cnt = 0;
-		buffer_rem = BUFFER_SIZE;
+		// Reset buffer
+		buf->pos = buf->base;
+		buf->size = buf->len;
 	}
 }
 
-// Acknowledge the results of the snprintf call and update position and count, and flush the buffer if it gets too full
-void buffer_push(int size)
+void snbuffer_push(struct snbuffer* buf, size_t leftover, int size)
 {
-	if (size < 0)
+	if (size > 0)
 	{
-		return;
+		// >= is used to take the implied null terminator into account: if size == buf->size, one character is actually cut off in favor of the null
+		if ((size_t)size >= buf->size)
+		{
+			fprintf(stderr, "%i (gopherlist) - Warning: Discarded snprintf result due to size\n", getpid());
+		}
+		else
+		{
+			// Update position and remaining size for next call
+			buf->pos += size;
+			buf->size -= (size_t)size;
+		}
 	}
-	else if ((size_t)size > buffer_rem)
+	else if (size < 0)
 	{
-		fprintf(stderr, "%i (gopherlist) - Warning: Discarded snprintf result due to size\n", getpid());
-		buffer_flush();
-		return;
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot snprintf: %s\n", getpid(), strerror(errno));
+		exit(EXIT_FAILURE);
 	}
 	
-	buffer_pos += size;
-	buffer_cnt += (size_t)size;
-	buffer_rem -= (size_t)size;
-	
-	if (buffer_rem < BUFFER_BUFFER)
+	// Check if a flush is necessary to free space for the next call
+	if (buf->size < leftover)
 	{
-		buffer_flush();
+		snbuffer_flush(buf);
 	}
 }
 
-// Arguments passed to filename processing
-struct tree_args
+// List of filenames to be freed on exit
+size_t filenames_count = 0;
+char** filenames = NULL;
+
+void cleanup()
 {
-	const char* selector;
-	const char* hostname;
-	const char* port;
-};
+	if (filenames != NULL)
+	{
+		for (size_t i = 0; i < filenames_count; i++)
+		{
+			free(filenames[i]);
+		}
+		
+		free(filenames);
+	}
+}
+
+// String compare for qsort for rough alphabetical order
+static int compare_strings(const void* pa, const void* pb)
+{
+	return strcmp(*((const char**)pa), *((const char**)pb));
+}
 
 // Mapping of extension to selector type
-// Not comprehensive but at least an assortment of common and period-accurate stuff
 struct ext_entry
 {
-	char* ext;
-	char type;
+	const char* ext;
+	const char type;
 };
 
-struct ext_entry ext_table[] =
+// Not comprehensive but at least an assortment of common and period-accurate stuff
+const struct ext_entry ext_table[] =
 {
 	{"txt", '0'},
 	{"c", '0'},
@@ -115,97 +151,11 @@ struct ext_entry ext_table[] =
 	{NULL, '\0'}
 };
 
-// This is called by the tree traversal to handle each filename that had been placed in the tree
-void process_filename(const void* node, VISIT which, void* closure)
-{
-	// Want to handle them in sort order
-	if (which == preorder || which == endorder)
-	{
-		return;
-	}
-	
-	// Convert arguments into useful variables
-	const char* filename = *(char**)node;
-	struct tree_args* args = (struct tree_args*)closure;
-	
-	// Get the file stats
-	struct stat statbuf;
-	
-	if (stat(filename, &statbuf) < 0)
-	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot stat %s: %s\n", getpid(), filename, strerror(errno));
-		return;
-	}
-	
-	// Make sure it's world readable
-	if (!(statbuf.st_mode & S_IROTH))
-	{
-		return;
-	}
-	
-	char type;
-	
-	// Make sure it's a regular file, or a directory that is world executable
-	if (S_ISREG(statbuf.st_mode))
-	{
-		// Determine if it's executable or not
-		if (statbuf.st_mode & S_IXOTH)
-		{
-			// Treat executables as a query menu
-			// This is probably as good a guess as any, but if it's meant to be downloaded it shouldn't be +x
-			type = '7';
-		}
-		else
-		{
-			// Default behavior for regular non-executable files is to download as a binary file
-			type = '9';
-			
-			// If the file has an extension, inspect it for further context
-			char* extension = strrchr(filename, '.');
-			
-			if (extension != NULL)
-			{
-				extension++;
-				
-				struct ext_entry* curr_ext = ext_table;
-				
-				while (curr_ext->ext != NULL)
-				{
-					if (strcmp(extension, curr_ext->ext) == 0)
-					{
-						type = curr_ext->type;
-						break;
-					}
-					
-					curr_ext++;
-				}
-			}
-		}
-	}
-	else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
-	{
-		// Treat directories as being submenus
-		// You did put a gophermap in it, right?
-		type = '1';
-	}
-	else
-	{
-		return;
-	}
-	
-	// Build the menu line
-	buffer_push(snprintf(buffer_pos, buffer_rem, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, args->selector, filename, args->hostname, args->port));
-}
-
-// Tree search string compare
-static int compare_strings(const void* pa, const void* pb)
-{
-	return (strcmp(pa, pb));
-}
-
 // Main function
 int main()
 {
+	atexit(cleanup);
+	
 	// Get the environment variables we need
 	// It's fine if they are null, too, even if it would generate a non-functional menu
 	char* env_selector = getenv("SCRIPT_NAME");
@@ -255,10 +205,18 @@ int main()
 		while (str_curr++ != NULL);
 	}
 	
-	// This is the root of a tree that contains all the accepted filenames
-	void* filenames = NULL;
+	// Allocate the list of filenames with a starter size that may be increased later
+	size_t filenames_size = 256;
 	
-	// Open a directory stream for the working directory so we can go through its files and add them to the tree
+	filenames = calloc(filenames_size, sizeof(char*));
+	
+	if (filenames == NULL)
+	{
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filenames: %s\n", getpid(), strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	// Open a directory stream for the working directory so we can go through its files and add them to the list
 	DIR* directory = opendir(".");
 	
 	if (directory == NULL)
@@ -277,8 +235,7 @@ int main()
 			continue;
 		}
 		
-		// We can't rely on the string existing over multiple iterations if the directory is large
-		// So allocate memory and copy it
+		// Make a copy of the filename
 		char* filename = malloc(strlen(entry->d_name) + 1);
 		
 		if (filename == NULL)
@@ -289,18 +246,40 @@ int main()
 		
 		strcpy(filename, entry->d_name);
 		
-		// Add the filename to the tree
-		if (tsearch(filename, &filenames, compare_strings) == NULL)
+		// Add the filename to the list
+		filenames[filenames_count] = filename;
+		
+		filenames_count++;
+		
+		// Resize the list if necessary
+		if (filenames_count == filenames_size)
 		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for tree node\n", getpid());
-			exit(EXIT_FAILURE);
+			filenames_size *= 2;
+			
+			filenames = reallocarray(filenames, filenames_size, sizeof(char*));
+			
+			if (filenames == NULL)
+			{
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
+				exit(EXIT_FAILURE);
+			}
 		}
 	}
 	
 	closedir(directory);
 	
+	// Sort the list of filenames
+	qsort(filenames, filenames_count, sizeof(char*), compare_strings);
+	
+	// Prepare a buffer for the output to produce a minimum number of writes
+	char buffer[BUFFER_LENGTH];
+	
+	struct snbuffer buf;
+	
+	snbuffer_setup(&buf, STDOUT_FILENO, buffer, BUFFER_LENGTH);
+	
 	// Build header, which includes a "parent directory" link if the selector indicated a subdirectory
-	buffer_push(snprintf(buffer_pos, buffer_rem, "iDirectory listing of %s%s\r\n", env_hostname, selector));
+	snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "iDirectory listing of %s%s\r\n", env_hostname, selector));
 	
 	if (n > 0)
 	{
@@ -311,28 +290,91 @@ int main()
 			slash = strchr(slash, '/') + 1;
 		}
 		
-		buffer_push(snprintf(buffer_pos, buffer_rem, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
+		snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
 	}
 	
-	buffer_push(snprintf(buffer_pos, buffer_rem, "i\r\n"));
+	snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "i\r\n"));
 	
-	// Traverse the tree to add menu lines to the buffer and then destroy it
-	struct tree_args args =
+	// Build list of filenames
+	for (size_t i = 0; i < filenames_count; i++)
 	{
-		.selector = selector,
-		.hostname = env_hostname,
-		.port = env_port
-	};
+		char* filename = filenames[i];
+		
+		// Get the file stats
+		struct stat statbuf;
+		
+		if (stat(filename, &statbuf) < 0)
+		{
+			fprintf(stderr, "%i (gopherlist) - Error: Cannot stat %s: %s\n", getpid(), filename, strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+		
+		// Make sure it's world readable
+		if (!(statbuf.st_mode & S_IROTH))
+		{
+			continue;
+		}
+		
+		char type;
+		
+		// Make sure it's a regular file, or a directory that is world executable
+		if (S_ISREG(statbuf.st_mode))
+		{
+			// Determine if it's executable or not
+			if (statbuf.st_mode & S_IXOTH)
+			{
+				// Treat executables as a query menu
+				// This is probably as good a guess as any, but if it's meant to be downloaded it shouldn't be +x
+				type = '7';
+			}
+			else
+			{
+				// Default behavior for regular non-executable files is to download as a binary file
+				type = '9';
+				
+				// If the file has an extension, inspect it for further context
+				char* extension = strrchr(filename, '.');
+				
+				if (extension != NULL)
+				{
+					// Advance past the period
+					extension++;
+					
+					// Go through the list until a match is found, or not
+					const struct ext_entry* curr_ext = ext_table;
+					
+					while (curr_ext->ext != NULL)
+					{
+						if (strcmp(extension, curr_ext->ext) == 0)
+						{
+							type = curr_ext->type;
+							break;
+						}
+						
+						curr_ext++;
+					}
+				}
+			}
+		}
+		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
+		{
+			// Treat directories as being submenus
+			// You did put a gophermap in it, right?
+			type = '1';
+		}
+		else
+		{
+			continue;
+		}
+		
+		// Build the menu line
+		snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, selector, filename, env_hostname, env_port));
+	}
 	
-	twalk_r(filenames, process_filename, &args);
+	// Add the footer and output the buffer
+	snbuffer_push(&buf, 0, snprintf(buf.pos, buf.size, ".\r\n"));
 	
-	tdestroy(filenames, free);
-	
-	// Add the footer
-	buffer_push(snprintf(buffer_pos, buffer_rem, ".\r\n"));
-	
-	// Output anything remaining
-	buffer_flush();
+	snbuffer_flush(&buf);
 	
 	exit(EXIT_SUCCESS);
 }
