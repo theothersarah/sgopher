@@ -14,7 +14,9 @@ sgopher is configured entirely with command line options. It accepts the followi
 -t, --timeout=NUMBER       Time in seconds before booting inactive client. Defaults to 10  
 -w, --workers=NUMBER       Number of worker processes. Defaults to 1
 
-sgopher currently contains no provisions for access logging or throttling. Errors are reported via stderr.
+sgopher must be run as a user with permission to bind a socket to ports below 1024, or else a custom high port number must be used. It currently contains no provisions for access logging or throttling. Errors are reported via stderr.
+
+When SIGTERM is sent to sgopher's main process, it will send SIGTERM to each of its children and wait for them to exit before exiting itself. This is intended to be the correct way to gracefully terminate sgopher. However, terminating it via SIGKILL or SIGINT via ctrl+c in the console does not cause any issues.
 
 ## Standards Support
 sgopher supports the Gopher protocol as written in RFC 1436 with a small number of exceptions.
@@ -26,7 +28,7 @@ Secondly, it transfers text files as they exist on the disk. It does not reproce
 Note: sgopher insists that valid requests to end with a CRLF sequence as stated in RFC 1436. It will reject clients that only send LF.
 
 ## "CGI"
-Executable files, scripts or binaries, are not served directly by sgopher. They are executed in a forked process similar to HTTP's CGI standard.
+Executable files, scripts or binaries, are not served directly by sgopher. They are executed in a forked process using an interface inspired by HTTP's CGI standard. These programs will be hereafter referred to as CGI programs, but note that it does not fully conform to the real CGI standard.
 
 CGI programs are executed with the following file descriptors:
 
@@ -34,7 +36,7 @@ CGI programs are executed with the following file descriptors:
 1 (stdout): client socket. Technically is read/write, but a well-behaved client shouldn't be sending anything.  
 2 (stderr): The stderr pipe of the server process, for error reporting. Will show up in the console or wherever else the server's stderr is going.
 
-Additionally, there will be an open file descriptor referring to the executable file itself. It will have whatever number it had when the server opened it for execution. This is present due to a limitation of the fexecve function - if the executable file is a script with a shebang line, it will only execute correctly if the file is NOT marked CLOEXEC, so it persists across the fexecve call. It isopened read-only so you can't accidentally overwrite it, though.
+Additionally, there will be an open file descriptor referring to the executable file itself. It will have whatever number it had when the server opened it for execution. This is present due to a limitation of the fexecve function - if the executable file is a script with a shebang line, it will only execute correctly if the file is NOT marked CLOEXEC, so it persists across the fexecve call. It is opened read-only so you can't accidentally overwrite it, though. I did not consider this to be enough of a problem to justify examining the file for the shebang.
 
 The following environmental variables are provided, mimicking some aspects of the CGI standard:
 
@@ -72,11 +74,11 @@ It should look something like this in a directory listing, and gopherlist itself
 
 lrwxrwxrwx 1 sarah sarah   16 May  6 06:49 .gophermap -> ../../gopherlist
 
-When the directory is accessed by a user, a gophermap presenting a file listing will be generated and prsented to the client. Files will only be listed if they meet the requirements to be served: the filename must not start with a period, it must be world-readable, and if it is a directory it must also be world-executable. A parent directory link will be generated if applicable. The hostname must be set correctly with the --hostname option.
+When the directory is accessed by a user, a gophermap presenting a file listing will be generated and presented to the client. Files will only be listed if they meet the requirements to be served: the filename must not start with a period, it must be world-readable, and if it is a directory it must also be world-executable. A parent directory link will be generated if applicable. The server's externally-accessible hostname must be set correctly with the --hostname option or the links will not work correctly.
 
-Note that gopherlist uses a simplistic method of generating menu selectors that is only valid if the selector sent to it had originally referred to the containing directory. This is fine with the default .gophermap name, because files starting with periods cannot be accessed directly, but be aware if you use a different name for your gophermaps.
+Note that gopherlist uses a simplistic method of generating menu selectors that is only valid if the selector sent to it had originally referred to the containing directory. Essentially, a selector of /directory works, but /directory/gopherlist will not work because the menu selectors will be generated as /directory/gopherlist/file which will not work since gopherlist is not a directory. This is fine with the default .gophermap name, because files starting with periods cannot be accessed directly, but be aware if you use a different name for your gophermaps.
 
-## sgopher Technical Notes
+## sgopher Technical Ramblings
 sgopher makes use of Linux-specific features whereever that would reduce the number of system calls or allow the logic to be more simple. Examples include the use of accept4 in place of accept and a pair of setsockopt calls to obtain a non-blocking, close-on-exec client socket, or the use of a Linux-specific variant of fork that returns a pidfd instead of using separate fork and pidfd_open calls. It also uses more mundane Linux-isms like an epoll-based event loop with timerfds and signalfds mixed in with the sockets, and sendfile to transfer files without userspace buffers.
 
 Version 5.4 or so of the Linux kernel is needed for sgopher to function, mainly due to pidfd functionality being added in the Linux 5 series.

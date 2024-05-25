@@ -1,4 +1,4 @@
-// for twalk_r, tdestroy, and O_PATH
+// for twalk_r and tdestroy
 #define _GNU_SOURCE
 
 // opendir, readdir, closedir

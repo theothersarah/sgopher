@@ -1,4 +1,5 @@
-iHello, world!			
+iHello, world!
 0Gopher Specification	/rfc1436.txt	localhost	70
 0CGI Environment Variables	/env.sh	localhost	70
+7CGI Query	/query.sh	localhost	70
 .
