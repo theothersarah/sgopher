@@ -13,6 +13,9 @@
 // epoll API
 #include <sys/epoll.h>
 
+// Linked list macros
+#include <sys/queue.h>
+
 // close
 #include <unistd.h>
 
@@ -28,12 +31,16 @@ struct sepoll_callback
 	
 	void* userdata1;
 	void* userdata2;
+	
+	LIST_ENTRY(sepoll_callback) entry;
 };
+
+LIST_HEAD(callback_list, sepoll_callback);
 
 struct sepoll_loop
 {
 	void* callbacks_tree;
-	void* callbacks_gc_tree;
+	struct callback_list callbacks_gc_list;
 	
 	struct epoll_event* epoll_events;
 	int epoll_events_size;
@@ -45,22 +52,6 @@ struct sepoll_loop
 // *********************************************************************
 // Compare functions for tree searches
 // *********************************************************************
-
-static int compare_pointer(const void* pa, const void* pb)
-{
-	if (pa < pb)
-	{
-		return -1;
-	}
-	else if (pa > pb)
-	{
-		return 1;
-	}
-	else
-	{
-		return 0;
-	}
-}
 
 static int compare_callback_fd(const void* pa, const void* pb)
 {
@@ -114,9 +105,11 @@ struct sepoll_loop* sepoll_create(int size)
 		return NULL;
 	}
 	
-	//
+	// 
 	loop->callbacks_tree = NULL;
-	loop->callbacks_gc_tree = NULL;
+	
+	LIST_INIT(&loop->callbacks_gc_list);
+	
 	loop->epoll_events_size = size;
 	
 	return loop;
@@ -164,9 +157,15 @@ void sepoll_destroy(struct sepoll_loop* loop)
 		tdestroy(loop->callbacks_tree, free);
 	}
 	
-	if (loop->callbacks_gc_tree != NULL)
+	struct sepoll_callback* callback = LIST_FIRST(&loop->callbacks_gc_list);
+	
+	while (callback != NULL)
 	{
-		tdestroy(loop->callbacks_gc_tree, free);
+		struct sepoll_callback* next = LIST_NEXT(callback, entry);
+	
+		free(callback);
+		
+		callback = next;
 	}
 	
 	close(loop->epollfd);
@@ -311,9 +310,9 @@ int sepoll_remove(struct sepoll_loop* loop, int fd)
 	// Null out the callback function so it doesn't get called if it's still in the queue
 	callback->function = NULL;
 	
-	// Remove the event from the active tree and add it to the garbage collection tree
+	// Remove the event from the active tree and add it to the garbage collection list
 	tdelete(callback, &loop->callbacks_tree, compare_callback_fd);
-	tsearch(callback, &loop->callbacks_gc_tree, compare_pointer);
+	LIST_INSERT_HEAD(&loop->callbacks_gc_list, callback, entry);
 	
 	// Remove the file descriptor from epoll's interest list
 	return epoll_ctl(loop->epollfd, EPOLL_CTL_DEL, fd, NULL);
@@ -344,11 +343,18 @@ static inline int sepoll_iter(struct sepoll_loop* loop, int timeout)
 		}
 	}
 	
-	// 
-	if (loop->callbacks_gc_tree != NULL)
+	// Iterate through the garbage collection list and free everything in it
+	struct sepoll_callback* callback = LIST_FIRST(&loop->callbacks_gc_list);
+	
+	while (callback != NULL)
 	{
-		tdestroy(loop->callbacks_gc_tree, free);
-		loop->callbacks_gc_tree = NULL;
+		struct sepoll_callback* next = LIST_NEXT(callback, entry);
+		
+		LIST_REMOVE(callback, entry);
+		
+		free(callback);
+		
+		callback = next;
 	}
 	
 	return n;
