@@ -3,7 +3,7 @@
 struct server_params
 {
 	// Network
-	char* hostname;
+	const char* hostname;
 	unsigned short port;
 	
 	// Client management
@@ -11,8 +11,8 @@ struct server_params
 	unsigned int timeout;
 	
 	// Paths and files
-	char* directory;
-	char* indexfile;
+	const char* directory;
+	const char* indexfile;
 };
 
 int doserver(struct server_params* params);

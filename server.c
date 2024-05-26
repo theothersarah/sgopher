@@ -422,7 +422,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// Try to get stats of the directory
 					if (fstat(client->dirfd, &statbuf) < 0)
 					{
-						fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+						fprintf(stderr, "%i (CGI process) - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 						exit(EXIT_FAILURE);
 					}
@@ -534,8 +534,9 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				{
 					break;
 				}
-				else
+				else if (errno != EPIPE)
 				{
+					// Don't bother reporting it if it's a broken pipe because that had nothing to do with us
 					fprintf(stderr, "%i - Error: Problem sending file to client: %s\n", getpid(), strerror(errno));
 					
 					// Only send the error message if none of the file has been sent yet
@@ -543,10 +544,10 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					{
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 					}
-					
-					client_disconnect(server, client);
-					return;
 				}
+				
+				client_disconnect(server, client);
+				return;
 			}
 		}
 		while (client->sentsize < client->filesize);

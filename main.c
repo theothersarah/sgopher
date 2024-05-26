@@ -52,9 +52,9 @@ enum arg_keys
 // Program arguments
 struct arguments
 {
-	char* directory;
-	char* hostname;
-	char* indexfile;
+	const char* directory;
+	const char* hostname;
+	const char* indexfile;
 	unsigned int maxClients;
 	unsigned short port;
 	unsigned int timeout;
