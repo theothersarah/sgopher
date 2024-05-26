@@ -766,7 +766,7 @@ static int ignoresignals()
 	}
 	
 	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
-	if (sigaction(SIGCHLD, &act, NULL) < 0)
+	if (sigaction(SIGPIPE, &act, NULL) < 0)
 	{
 		fprintf(stderr, "%i - Error: Cannot ignore  SIGPIPE: %s\n", getpid(), strerror(errno));
 		return -1;
