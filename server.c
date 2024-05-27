@@ -1124,7 +1124,15 @@ int doserver(struct server_params* params)
 	}
 	
 	// Set up epoll
+	// Strictly speaking it doesn't need to be this big but it lets it handle an event from each client plus core things in one loop
 	server->loop = sepoll_create((int)params->maxClients + 3);
+	
+	if (server->loop == NULL)
+	{
+		fprintf(stderr, "%i - Error: Cannot create event loop!\n", getpid());
+		return -1;
+	}
+	
 	sepoll_add(server->loop, server->sigfd, EPOLLIN | EPOLLET, server_signal, server, NULL);
 	sepoll_add(server->loop, server->timerfd, EPOLLIN, server_timer, server, NULL);
 	sepoll_add(server->loop, server->socket, EPOLLIN | EPOLLET, server_socket, server, NULL);

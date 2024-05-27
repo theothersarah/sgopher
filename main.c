@@ -123,7 +123,7 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 }
 
 // *********************************************************************
-// Server state definitions
+// Worker and supervisor state definitions
 // *********************************************************************
 
 struct worker_t
@@ -144,9 +144,8 @@ struct supervisor_t
 };
 
 // *********************************************************************
-// Cleanup functions
+// Send a signal to all workers via pidfds, optionally closing the pidfd
 // *********************************************************************
-
 static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool close_pidfd)
 {
 	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
@@ -166,41 +165,9 @@ static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool cl
 	}
 }
 
-static void cleanup(int code, void* arg)
-{
-	struct supervisor_t* supervisor = arg;
-	
-	if (supervisor->workers != NULL)
-	{
-		if (code == EXIT_FAILURE)
-		{
-			if (supervisor->pid == getpid())
-			{
-				signal_all_workers(supervisor, SIGKILL, true);
-			}
-		}
-		
-		free(supervisor->workers);
-	}
-	
-	if (supervisor->sigfd >= 0)
-	{
-		close(supervisor->sigfd);
-	}
-	
-	if (supervisor->loop != NULL)
-	{
-		sepoll_destroy(supervisor->loop);
-	}
-	
-	free(supervisor);
-}
-
 // *********************************************************************
-// Server event handlers
+// Handle event on a signalfd
 // *********************************************************************
-
-// signalfd event handler
 static void sigfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
 	struct supervisor_t* supervisor = userdata1;
@@ -234,12 +201,15 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 	}
 }
 
-// pidfd event handler
+// *********************************************************************
+// Handle event on a pidfd
+// *********************************************************************
 static void pidfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
 	struct supervisor_t* supervisor = userdata1;
 	struct worker_t* worker = userdata2;
 	
+	// Get the exit code and reap the child process
 	siginfo_t siginfo;
 	
 	if (waitid(P_PIDFD, (id_t)fd, &siginfo, WEXITED) < 0)
@@ -250,18 +220,55 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 	{
 		fprintf(stderr, "S - Worker PID %i exited with status %i\n", worker->pid, siginfo.si_status);
 	}
-
+	
+	// Deal with the file descriptor
 	sepoll_remove(supervisor->loop, fd);
 	close(fd);
 	
 	worker->pidfd = -1;
 	
+	// Exit the event loop if there are no more active workers
 	supervisor->activeWorkers--;
 	
 	if (supervisor->activeWorkers == 0)
 	{
 		sepoll_exit(supervisor->loop);
 	}
+}
+
+// *********************************************************************
+// Supervisor cleanup
+// *********************************************************************
+static void cleanup(int code, void* arg)
+{
+	struct supervisor_t* supervisor = arg;
+	
+	if (supervisor->workers != NULL)
+	{
+		// On a successful exit the children should have exited already
+		if (code == EXIT_FAILURE)
+		{
+			// Only the supervisor should try to kill the workers
+			if (supervisor->pid == getpid())
+			{
+				signal_all_workers(supervisor, SIGKILL, true);
+			}
+		}
+		
+		free(supervisor->workers);
+	}
+	
+	if (supervisor->sigfd >= 0)
+	{
+		close(supervisor->sigfd);
+	}
+	
+	if (supervisor->loop != NULL)
+	{
+		sepoll_destroy(supervisor->loop);
+	}
+	
+	free(supervisor);
 }
 
 // *********************************************************************
@@ -313,10 +320,17 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	if (dup2(devnull, STDIN_FILENO) < 0 || dup2(devnull, STDOUT_FILENO) < 0)
+	if (dup2(devnull, STDIN_FILENO) < 0)
 	{
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdin: %s\n", strerror(errno));
 		close(devnull);
-		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over standard file descriptors: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	if (dup2(devnull, STDOUT_FILENO) < 0)
+	{
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdout: %s\n", strerror(errno));
+		close(devnull);
 		exit(EXIT_FAILURE);
 	}
 	
@@ -412,8 +426,14 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	// Create event loop with enough room for each worker and the signalfd
+	// Create event loop with enough room for responses from each worker and the signalfd in one loop
 	supervisor->loop = sepoll_create((int)supervisor->numWorkers + 1);
+	
+	if (supervisor->loop == NULL)
+	{
+		fprintf(stderr, "S - Error: Cannot create event loop!\n");
+		exit(EXIT_FAILURE);
+	}
 	
 	sepoll_add(supervisor->loop, supervisor->sigfd, EPOLLIN | EPOLLET, sigfd_event, supervisor, NULL);
 	

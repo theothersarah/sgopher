@@ -25,13 +25,16 @@
 
 struct sepoll_callback
 {
+	// Associated file descriptor, used as the key for tree searching
 	int fd;
 	
+	// Function pointer and userdata arguments
 	void (*function)(int, unsigned int, void*, void*);
 	
 	void* userdata1;
 	void* userdata2;
 	
+	// Can also be added to a list while awaiting garbage collection
 	LIST_ENTRY(sepoll_callback) entry;
 };
 
@@ -39,18 +42,23 @@ LIST_HEAD(callback_list, sepoll_callback);
 
 struct sepoll_loop
 {
+	// Tree for active callbacks, sorted by file descriptor
 	void* callbacks_tree;
+	
+	// List for garbage collection since order is not important for that
 	struct callback_list callbacks_gc_list;
 	
+	// epoll stuff
 	struct epoll_event* epoll_events;
 	int epoll_events_size;
 	int epollfd;
 	
+	// Set to false during looping to exit the loop
 	bool run;
 };
 
 // *********************************************************************
-// Compare functions for tree searches
+// Functions for tree searching
 // *********************************************************************
 
 static int compare_callback_fd(const void* pa, const void* pb)
@@ -72,13 +80,35 @@ static int compare_callback_fd(const void* pa, const void* pb)
 	}
 }
 
+static struct sepoll_callback* sepoll_find_fd(struct sepoll_loop* loop, int fd)
+{
+	struct sepoll_callback searchfd =
+	{
+		.fd = fd
+	};
+	
+	struct sepoll_callback** found = tfind(&searchfd, &loop->callbacks_tree, compare_callback_fd);
+	
+	if (found == NULL)
+	{
+		return NULL;
+	}
+	
+	return *found;
+}
+
 // *********************************************************************
 // Creation, resizing, and destruction functions
+//
+// Size is actually how many events can be returned in one loop, rather
+// than how many events can be registered in total. Ideally it should be
+// greater than the average number of events expected to occur
+// simultaneously.
 // *********************************************************************
 
 struct sepoll_loop* sepoll_create(int size)
 {
-	//
+	// Allocate memory for opaque structure
 	struct sepoll_loop* loop = malloc(sizeof(struct sepoll_loop));
 	
 	if (loop == NULL)
@@ -86,7 +116,7 @@ struct sepoll_loop* sepoll_create(int size)
 		return NULL;
 	}
 	
-	//
+	// Allocate memory for returned epoll events
 	loop->epoll_events = calloc((size_t)size, sizeof(struct epoll_event));
 	
 	if (loop->epoll_events == NULL)
@@ -95,7 +125,7 @@ struct sepoll_loop* sepoll_create(int size)
 		return NULL;
 	}
 	
-	//
+	// Create the epoll fd with the almost-always desirable CLOEXEC flag
 	loop->epollfd = epoll_create1(EPOLL_CLOEXEC);
 	
 	if (loop->epollfd < 0)
@@ -105,7 +135,7 @@ struct sepoll_loop* sepoll_create(int size)
 		return NULL;
 	}
 	
-	// 
+	//  Initialize
 	loop->callbacks_tree = NULL;
 	
 	LIST_INIT(&loop->callbacks_gc_list);
@@ -176,11 +206,12 @@ void sepoll_destroy(struct sepoll_loop* loop)
 }
 
 // *********************************************************************
-// 
+// Add, modify, and remove an event
 // *********************************************************************
 
 int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
+	// Allocate memory for the callback and initialize it
 	struct sepoll_callback* callback = malloc(sizeof(struct sepoll_callback));
 	
 	if (callback == NULL)
@@ -188,13 +219,13 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 		return -1;
 	}
 	
-	//
 	callback->fd = fd;
 	callback->function = function;
 	callback->userdata1 = userdata1;
 	callback->userdata2 = userdata2;
 	
-	//
+	// Attempt to add it to the tree
+	// If it can't be added or something with this file descriptor already exists on it, fail
 	struct sepoll_callback** entry = tsearch(callback, &loop->callbacks_tree, compare_callback_fd);
 	
 	if (entry == NULL || *entry != callback)
@@ -203,7 +234,7 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 		return -1;
 	}
 	
-	//
+	// Add the event to the epoll instance
 	struct epoll_event event =
 	{
 		.events = events,
@@ -212,28 +243,12 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 	
 	if (epoll_ctl(loop->epollfd, EPOLL_CTL_ADD, fd, &event) < 0)
 	{
+		tdelete(callback, &loop->callbacks_tree, compare_callback_fd);
 		free(callback);
 		return -1;
 	}
 	
 	return 0;
-}
-
-static struct sepoll_callback* sepoll_find_fd(struct sepoll_loop* loop, int fd)
-{
-	struct sepoll_callback searchfd =
-	{
-		.fd = fd
-	};
-	
-	struct sepoll_callback** found = tfind(&searchfd, &loop->callbacks_tree, compare_callback_fd);
-	
-	if (found == NULL)
-	{
-		return NULL;
-	}
-	
-	return *found;
 }
 
 int sepoll_mod(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
@@ -310,7 +325,7 @@ int sepoll_remove(struct sepoll_loop* loop, int fd)
 	// Null out the callback function so it doesn't get called if it's still in the queue
 	callback->function = NULL;
 	
-	// Remove the event from the active tree and add it to the garbage collection list
+	// Remove the event from the active tree and add it to the garbage collection list so it can be freed later
 	tdelete(callback, &loop->callbacks_tree, compare_callback_fd);
 	LIST_INSERT_HEAD(&loop->callbacks_gc_list, callback, entry);
 	
@@ -319,12 +334,12 @@ int sepoll_remove(struct sepoll_loop* loop, int fd)
 }
 
 // *********************************************************************
-// 
+// Functions for entering the event loop
 // *********************************************************************
 
 static inline int sepoll_iter(struct sepoll_loop* loop, int timeout)
 {
-	//
+	// Wait on epoll events or a timeout
 	int n = epoll_wait(loop->epollfd, loop->epoll_events, loop->epoll_events_size, timeout);
 	
 	if (n < 0)
