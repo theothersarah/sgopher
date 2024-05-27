@@ -18,7 +18,7 @@
 // fprintf, snprintf
 #include <stdio.h>
 
-// malloc, free
+// malloc, free, on_exit
 #include <stdlib.h>
 
 // strerror, memchr, memmem, strcpy, strncat, strrchr
@@ -981,78 +981,20 @@ static int open_timerfd(time_t interval)
 }
 
 // *********************************************************************
-// Server setup and loop
+// Server cleanup
 // *********************************************************************
-int doserver(struct server_params* params)
+static void cleanup(int code, void* arg)
 {
-	// Set up signals
-	if (setupsignals() < 0)
-	{
-		return -1;
-	}
-	
-	// Max out open file descriptor limit
-	if (maxfdlimit() < 0)
-	{
-		return -1;
-	}
-	
-	// Set up the server state
-	struct server_state server;
-	
-	server.params = params;
-	server.numClients = 0;
-	
-	// Open content directory
-	server.directory = open_dir(params->directory);
-	
-	if (server.directory < 0)
-	{
-		return -1;
-	}
-	
-	// Open signalfd
-	server.sigfd = open_sigfd();
-	
-	if (server.sigfd < 0)
-	{
-		return -1;
-	}
-	
-	// Open timerfd
-	server.timerfd = open_timerfd(params->timeout);
-	
-	if (server.timerfd < 0)
-	{
-		return -1;
-	}
-	
-	// Open socket
-	server.socket = open_socket(params->port);
-	
-	if (server.socket < 0)
-	{
-		return -1;
-	}
-	
-	// Set up epoll
-	server.loop = sepoll_create((int)params->maxClients + 3);
-	sepoll_add(server.loop, server.sigfd, EPOLLIN | EPOLLET, server_signal, &server, NULL);
-	sepoll_add(server.loop, server.timerfd, EPOLLIN, server_timer, &server, NULL);
-	sepoll_add(server.loop, server.socket, EPOLLIN | EPOLLET, server_socket, &server, NULL);
-	
-	// Initialize client list
-	LIST_INIT(&server.clients);
-	
-	// Enter event loop
-	fprintf(stderr, "%i - Successfully started\n", getpid());
-	sepoll_enter(server.loop);
+	struct server_state* server = arg;
 	
 	// Get rid of event loop
-	sepoll_destroy(server.loop);
+	if (server->loop != NULL)
+	{
+		sepoll_destroy(server->loop);
+	}
 	
 	// Disconnect all clients
-	struct client_state* client = LIST_FIRST(&server.clients);
+	struct client_state* client = LIST_FIRST(&server->clients);
 	
 	while (client != NULL)
 	{
@@ -1086,10 +1028,111 @@ int doserver(struct server_params* params)
 	}
 	
 	// Close all the other FDs
-	close(server.socket);
-	close(server.timerfd);
-	close(server.sigfd);
-	close(server.directory);
+	if (server->socket >= 0)
+	{
+		close(server->socket);
+	}
+	
+	if (server->timerfd >= 0)
+	{
+		close(server->timerfd);
+	}
+	
+	if (server->sigfd >= 0)
+	{
+		close(server->sigfd);
+	}
+	
+	if (server->directory >= 0)
+	{
+		close(server->directory);
+	}
+	
+	free(server);
+}
+
+// *********************************************************************
+// Server setup and loop
+// *********************************************************************
+int doserver(struct server_params* params)
+{
+	// Set up signals
+	if (setupsignals() < 0)
+	{
+		return -1;
+	}
+	
+	// Max out open file descriptor limit
+	if (maxfdlimit() < 0)
+	{
+		return -1;
+	}
+	
+	// Allocate and set up the server state
+	struct server_state* server = malloc(sizeof(struct server_state));
+	
+	if (server == NULL)
+	{
+		fprintf(stderr, "%i - Error: Could not allocate memory for server state: %s\n", getpid(), strerror(errno));
+		return -1;
+	}
+	
+	server->params = params;
+	server->numClients = 0;
+	
+	LIST_INIT(&server->clients);
+	
+	server->directory = -1;
+	server->sigfd = -1;
+	server->timerfd = -1;
+	server->socket = -1;
+	
+	server->loop = NULL;
+	
+	on_exit(cleanup, server);
+	
+	// Open content directory
+	server->directory = open_dir(params->directory);
+	
+	if (server->directory < 0)
+	{
+		return -1;
+	}
+	
+	// Open signalfd
+	server->sigfd = open_sigfd();
+	
+	if (server->sigfd < 0)
+	{
+		return -1;
+	}
+	
+	// Open timerfd
+	server->timerfd = open_timerfd(params->timeout);
+	
+	if (server->timerfd < 0)
+	{
+		return -1;
+	}
+	
+	// Open socket
+	server->socket = open_socket(params->port);
+	
+	if (server->socket < 0)
+	{
+		return -1;
+	}
+	
+	// Set up epoll
+	server->loop = sepoll_create((int)params->maxClients + 3);
+	sepoll_add(server->loop, server->sigfd, EPOLLIN | EPOLLET, server_signal, server, NULL);
+	sepoll_add(server->loop, server->timerfd, EPOLLIN, server_timer, server, NULL);
+	sepoll_add(server->loop, server->socket, EPOLLIN | EPOLLET, server_socket, server, NULL);
+	
+	// Enter event loop
+	fprintf(stderr, "%i - Successfully started\n", getpid());
+	
+	sepoll_enter(server->loop);
 	
 	fprintf(stderr, "%i - Exiting\n", getpid());
 	

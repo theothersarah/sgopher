@@ -14,7 +14,7 @@
 // sscanf, printf, fprintf
 #include <stdio.h>
 
-// malloc, free, atexit, exit
+// malloc, free, on_exit, exit
 #include <stdlib.h>
 
 // strerror, strlen
@@ -198,20 +198,17 @@ struct result
 	long mismatch;
 };
 
-struct result* results = NULL;
-
-void cleanup()
+void cleanup(int code, void* arg)
 {
-	if (results != NULL)
-	{
-		sfree(results);
-	}
+	struct result* results = arg;
+	
+	sfree(results);
 }
 
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize)
+int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize, struct result* results)
 {
 	// Initialize success counter in shared memory
 	results[id].total = 0;
@@ -441,9 +438,6 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 // *********************************************************************
 int main(int argc, char* argv[])
 {
-	// Set up cleanup function
-	atexit(cleanup);
-	
 	// argp parser options
 	struct argp argp_parser = {argp_options, argp_parse_options, 0, argp_doc};
 	
@@ -470,13 +464,15 @@ int main(int argc, char* argv[])
 	fprintf(stderr, "Workers: %i\n", args.workers);
 	
 	// Allocate shared memory
-	results = (struct result*)scalloc(args.workers, sizeof(struct result));
+	struct result* results = (struct result*)scalloc(args.workers, sizeof(struct result));
 	
 	if (results == NULL)
 	{
 		fprintf(stderr, "Error: Cannot allocate shared memory for results: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
+	
+	on_exit(cleanup, results);
 	
 	// Spawn worker processes
 	for (unsigned int i = 0; i < args.workers; i++)
@@ -494,7 +490,7 @@ int main(int argc, char* argv[])
 				exit(EXIT_FAILURE);
 			}
 			
-			int retval = process(i, &args, rxBuffer, rxBufferSize);
+			int retval = process(i, &args, rxBuffer, rxBufferSize, results);
 			
 			free(rxBuffer);
 			

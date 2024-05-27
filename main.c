@@ -10,14 +10,17 @@
 // sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
-// strerror
-#include <string.h>
+// bool
+#include <stdbool.h>
 
 // sscanf, fprintf
 #include <stdio.h>
 
 // exit, on_exit, malloc, calloc, free
 #include <stdlib.h>
+
+// strerror
+#include <string.h>
 
 // pidfd_send_signal
 #include <sys/pidfd.h>
@@ -144,15 +147,20 @@ struct supervisor_t
 // Cleanup functions
 // *********************************************************************
 
-static inline void signal_all_workers(struct supervisor_t* supervisor, int sig)
+static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool close_pidfd)
 {
 	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
 	{
-		if (supervisor->workers[i].pid >= 0)
+		if (supervisor->workers[i].pidfd >= 0)
 		{
 			if (pidfd_send_signal(supervisor->workers[i].pidfd, sig, NULL, 0) < 0)
 			{
-				fprintf(stderr, "S - Error: Cannot send SIGTERM to child via pidfd: %s\n", strerror(errno));
+				fprintf(stderr, "S - Error: Cannot send signal to child via pidfd: %s\n", strerror(errno));
+			}
+			
+			if (close_pidfd)
+			{
+				close(supervisor->workers[i].pidfd);
 			}
 		}
 	}
@@ -168,11 +176,21 @@ static void cleanup(int code, void* arg)
 		{
 			if (supervisor->pid == getpid())
 			{
-				signal_all_workers(supervisor, SIGKILL);
+				signal_all_workers(supervisor, SIGKILL, true);
 			}
 		}
 		
 		free(supervisor->workers);
+	}
+	
+	if (supervisor->sigfd >= 0)
+	{
+		close(supervisor->sigfd);
+	}
+	
+	if (supervisor->loop != NULL)
+	{
+		sepoll_destroy(supervisor->loop);
 	}
 	
 	free(supervisor);
@@ -209,7 +227,7 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 		case SIGTERM:
 			fprintf(stderr, "S - Received SIGTERM, sending SIGTERM to children\n");
 			
-			signal_all_workers(supervisor, SIGTERM);
+			signal_all_workers(supervisor, SIGTERM, false);
 			
 			break;
 		}
@@ -304,7 +322,7 @@ int main(int argc, char* argv[])
 	
 	close(devnull);
 	
-	// Set up supervisor
+	// Allocate and set up supervisor
 	struct supervisor_t* supervisor = malloc(sizeof(struct supervisor_t));
 	
 	if (supervisor == NULL)
@@ -313,12 +331,14 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	on_exit(cleanup, supervisor);
-	
 	supervisor->pid = getpid();
 	supervisor->numWorkers = args.numWorkers;
+	supervisor->sigfd = -1;
+	supervisor->loop = NULL;
 	
-	// Set up workers
+	on_exit(cleanup, supervisor);
+	
+	// Allocate and set up workers
 	supervisor->workers = calloc(supervisor->numWorkers, sizeof(struct worker_t));
 	
 	if (supervisor->workers == NULL)
@@ -404,10 +424,6 @@ int main(int argc, char* argv[])
 	
 	// Event loop doesn't exit until all children exit
 	sepoll_enter(supervisor->loop);
-	
-	sepoll_destroy(supervisor->loop);
-	
-	close(supervisor->sigfd);
 	
 	fprintf(stderr, "S - All workers exited\n");
 	
