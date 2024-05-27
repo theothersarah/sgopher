@@ -27,6 +27,9 @@
 // pidfd_send_signal
 #include <sys/pidfd.h>
 
+// prctl
+#include <sys/prctl.h>
+
 // Linked list macros
 #include <sys/queue.h>
 
@@ -684,6 +687,7 @@ static void server_signal(int fd, unsigned int events, void* userdata1, void* us
 		switch (siginfo.ssi_signo)
 		{
 		case SIGTERM:
+			fprintf(stderr, "%i - Received SIGTERM\n", getpid());
 			sepoll_exit(server->loop);
 			break;
 		}
@@ -749,10 +753,19 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 }
 
 // *********************************************************************
-// Ignore signals that are counteractive to the program
+// Set parent death signal and ignore signals that are counteractive to
+// the program
 // *********************************************************************
-static int ignoresignals()
+static int setupsignals()
 {
+	// We want to get SIGTERM if the parent dies
+	if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0)
+	{
+		fprintf(stderr, "%i - Error: Cannot set signal to receive on parent death: %s\n", getpid(), strerror(errno));
+		return -1;
+	}
+	
+	// Ignore signals
 	struct sigaction act =
 	{
 		.sa_handler = SIG_IGN,
@@ -972,8 +985,8 @@ static int open_timerfd(time_t interval)
 // *********************************************************************
 int doserver(struct server_params* params)
 {
-	// Ignore signals that we really don't want
-	if (ignoresignals() < 0)
+	// Set up signals
+	if (setupsignals() < 0)
 	{
 		return -1;
 	}
@@ -1077,6 +1090,8 @@ int doserver(struct server_params* params)
 	close(server.timerfd);
 	close(server.sigfd);
 	close(server.directory);
+	
+	fprintf(stderr, "%i - Exiting\n", getpid());
 	
 	return 0;
 }

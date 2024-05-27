@@ -4,6 +4,9 @@
 // errno
 #include <errno.h>
 
+// open
+#include <fcntl.h>
+
 // sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
@@ -13,19 +16,19 @@
 // sscanf, fprintf
 #include <stdio.h>
 
-// exit
+// exit, on_exit, malloc, calloc, free
 #include <stdlib.h>
 
-// pidfd_open
+// pidfd_send_signal
 #include <sys/pidfd.h>
 
-// pidfd_send_signal
+// signalfd
 #include <sys/signalfd.h>
 
 // waitid
 #include <sys/wait.h>
 
-// close, read
+// close, read, getpid, dup2
 #include <unistd.h>
 
 // My stuff
@@ -120,23 +123,60 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 // Server state definitions
 // *********************************************************************
 
-#define MAX_WORKERS 256
-
-struct worker
+struct worker_t
 {
 	unsigned int number;
 	pid_t pid;
 	int pidfd;
 };
 
-struct supervisor
+struct supervisor_t
 {
-	struct worker workers[MAX_WORKERS];
+	pid_t pid;
+	struct worker_t* workers;
 	unsigned int numWorkers;
 	unsigned int activeWorkers;
 	int sigfd;
 	struct sepoll_loop* loop;
 };
+
+// *********************************************************************
+// Cleanup functions
+// *********************************************************************
+
+static inline void signal_all_workers(struct supervisor_t* supervisor, int sig)
+{
+	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
+	{
+		if (supervisor->workers[i].pid >= 0)
+		{
+			if (pidfd_send_signal(supervisor->workers[i].pidfd, sig, NULL, 0) < 0)
+			{
+				fprintf(stderr, "S - Error: Cannot send SIGTERM to child via pidfd: %s\n", strerror(errno));
+			}
+		}
+	}
+}
+
+static void cleanup(int code, void* arg)
+{
+	struct supervisor_t* supervisor = arg;
+	
+	if (supervisor->workers != NULL)
+	{
+		if (code == EXIT_FAILURE)
+		{
+			if (supervisor->pid == getpid())
+			{
+				signal_all_workers(supervisor, SIGKILL);
+			}
+		}
+		
+		free(supervisor->workers);
+	}
+	
+	free(supervisor);
+}
 
 // *********************************************************************
 // Server event handlers
@@ -145,7 +185,7 @@ struct supervisor
 // signalfd event handler
 static void sigfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct supervisor* supervisor = userdata1;
+	struct supervisor_t* supervisor = userdata1;
 	
 	while (1)
 	{
@@ -167,16 +207,9 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 		switch (siginfo.ssi_signo)
 		{
 		case SIGTERM:
-			for (unsigned int i = 0; i < supervisor->numWorkers; i++)
-			{
-				if (supervisor->workers[i].pid >= 0)
-				{
-					if (pidfd_send_signal(supervisor->workers[i].pidfd, SIGTERM, NULL, 0) < 0)
-					{
-						fprintf(stderr, "S - Error: Cannot send kill signal via pidfd: %s\n", strerror(errno));
-					}
-				}
-			}
+			fprintf(stderr, "S - Received SIGTERM, sending SIGTERM to children\n");
+			
+			signal_all_workers(supervisor, SIGTERM);
 			
 			break;
 		}
@@ -186,8 +219,8 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 // pidfd event handler
 static void pidfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct supervisor* supervisor = userdata1;
-	struct worker* worker = userdata2;
+	struct supervisor_t* supervisor = userdata1;
+	struct worker_t* worker = userdata2;
 	
 	siginfo_t siginfo;
 	
@@ -234,13 +267,6 @@ int main(int argc, char* argv[])
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
 	
-	// Check arguments
-	if (args.numWorkers > MAX_WORKERS)
-	{
-		fprintf(stderr, "S - Invalid number of worker processes - must be no greater than %u\n", MAX_WORKERS);
-		exit(EXIT_FAILURE);
-	}
-	
 	// Report arguments
 	fprintf(stderr, "S - Serving files from %s\n", args.directory);
 	fprintf(stderr, "S - Hostname is %s\n", args.hostname);
@@ -269,25 +295,47 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	if (dup2(devnull, STDIN_FILENO) < 0)
+	if (dup2(devnull, STDIN_FILENO) < 0 || dup2(devnull, STDOUT_FILENO) < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdin: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-	
-	if (dup2(devnull, STDOUT_FILENO) < 0)
-	{
-		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdout: %s\n", strerror(errno));
+		close(devnull);
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over standard file descriptors: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	
 	close(devnull);
 	
+	// Set up supervisor
+	struct supervisor_t* supervisor = malloc(sizeof(struct supervisor_t));
+	
+	if (supervisor == NULL)
+	{
+		fprintf(stderr, "S - Error: Cannot allocate memory for supervisor: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	on_exit(cleanup, supervisor);
+	
+	supervisor->pid = getpid();
+	supervisor->numWorkers = args.numWorkers;
+	
+	// Set up workers
+	supervisor->workers = calloc(supervisor->numWorkers, sizeof(struct worker_t));
+	
+	if (supervisor->workers == NULL)
+	{
+		fprintf(stderr, "S - Error: Cannot allocate memory for workers: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
+	{
+		supervisor->workers[i].pidfd = -1;
+	}
+	
 	// Spawn worker processes
-	struct supervisor supervisor;
 	pid_t pid;
 	
-	for (unsigned int i = 0; i < args.numWorkers; i++)
+	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
 	{
 		int pidfd;
 		
@@ -295,7 +343,14 @@ int main(int argc, char* argv[])
 	
 		if (pid == 0) // Worker
 		{
-			break;
+			int retval = doserver(&params);
+			
+			if (retval < 0)
+			{
+				exit(EXIT_FAILURE);
+			}
+			
+			exit(EXIT_SUCCESS);
 		}
 		else if (pid < 0) // Error
 		{
@@ -306,70 +361,55 @@ int main(int argc, char* argv[])
 		{
 			fprintf(stderr, "S - Spawned worker process %u (PID %i)\n", i, pid);
 			
-			supervisor.workers[i].number = i;
-			supervisor.workers[i].pid = pid;
-			supervisor.workers[i].pidfd = pidfd;
+			supervisor->workers[i].number = i;
+			supervisor->workers[i].pid = pid;
+			supervisor->workers[i].pidfd = pidfd;
 		}
 	}
-
-	// Tasks for each process
-	if (pid == 0) // Worker task
+	
+	// Supervisor task begins here
+	fprintf(stderr, "S - All workers spawned\n");
+	
+	supervisor->activeWorkers = supervisor->numWorkers;
+	
+	// Set up signals and the signalfd
+	sigset_t mask;
+	
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGTERM);
+	
+	if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0)
 	{
-		int retval = doserver(&params);
-		
-		if (retval < 0)
-		{
-			exit(EXIT_FAILURE);
-		}
-		
-		exit(EXIT_SUCCESS);
+		fprintf(stderr, "S - Error: Cannot block signals: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
 	}
-	else // Parent task
+	
+	supervisor->sigfd = signalfd(-1, &mask, SFD_NONBLOCK);
+	
+	if (supervisor->sigfd < 0)
 	{
-		supervisor.numWorkers = args.numWorkers;
-		supervisor.activeWorkers = args.numWorkers;
-		
-		// Set up signals and the signalfd
-		sigset_t mask;
-		
-		sigemptyset(&mask);
-		sigaddset(&mask, SIGTERM);
-		
-		if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0)
-		{
-			fprintf(stderr, "%i - Error: Cannot block signals: %s\n", getpid(), strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-		
-		supervisor.sigfd = signalfd(-1, &mask, SFD_NONBLOCK);
-		
-		if (supervisor.sigfd < 0)
-		{
-			fprintf(stderr, "%i - Error: Cannot open signalfd: %s\n", getpid(), strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-		
-		fprintf(stderr, "S - All workers spawned\n");
-		
-		// Create event loop with enough room for each worker and the signalfd
-		supervisor.loop = sepoll_create((int)args.numWorkers + 1);
-		
-		sepoll_add(supervisor.loop, supervisor.sigfd, EPOLLIN | EPOLLET, sigfd_event, &supervisor, NULL);
-		
-		for (unsigned int i = 0; i < args.numWorkers; i++)
-		{
-			sepoll_add(supervisor.loop, supervisor.workers[i].pidfd, EPOLLIN, pidfd_event, &supervisor, &supervisor.workers[i]);
-		}
-		
-		// Event loop doesn't exit until all children exit
-		sepoll_enter(supervisor.loop);
-		
-		sepoll_destroy(supervisor.loop);
-		
-		close(supervisor.sigfd);
-		
-		fprintf(stderr, "S - All workers exited\n");
-		
-		exit(EXIT_SUCCESS);
+		fprintf(stderr, "S - Error: Cannot open signalfd: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
 	}
+	
+	// Create event loop with enough room for each worker and the signalfd
+	supervisor->loop = sepoll_create((int)supervisor->numWorkers + 1);
+	
+	sepoll_add(supervisor->loop, supervisor->sigfd, EPOLLIN | EPOLLET, sigfd_event, supervisor, NULL);
+	
+	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
+	{
+		sepoll_add(supervisor->loop, supervisor->workers[i].pidfd, EPOLLIN, pidfd_event, supervisor, &supervisor->workers[i]);
+	}
+	
+	// Event loop doesn't exit until all children exit
+	sepoll_enter(supervisor->loop);
+	
+	sepoll_destroy(supervisor->loop);
+	
+	close(supervisor->sigfd);
+	
+	fprintf(stderr, "S - All workers exited\n");
+	
+	exit(EXIT_SUCCESS);
 }
