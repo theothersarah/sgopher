@@ -31,7 +31,7 @@
 // waitid
 #include <sys/wait.h>
 
-// close, read, getpid, dup2
+// close, read, dup2
 #include <unistd.h>
 
 // My stuff
@@ -81,7 +81,7 @@ static struct argp_option argp_options[] =
 };
 
 // documentation string
-static char argp_doc[] = "";
+static char argp_doc[] = "Server for the Gopher protocol.";
 
 // argp globals (these must have these names)
 const char* argp_program_version = "0.1";
@@ -135,7 +135,6 @@ struct worker_t
 
 struct supervisor_t
 {
-	pid_t pid;
 	struct worker_t* workers;
 	unsigned int numWorkers;
 	unsigned int activeWorkers;
@@ -248,11 +247,7 @@ static void cleanup(int code, void* arg)
 		// On a successful exit the children should have exited already
 		if (code == EXIT_FAILURE)
 		{
-			// Only the supervisor should try to kill the workers
-			if (supervisor->pid == getpid())
-			{
-				signal_all_workers(supervisor, SIGKILL, true);
-			}
+			signal_all_workers(supervisor, SIGKILL, true);
 		}
 		
 		free(supervisor->workers);
@@ -345,12 +340,10 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	supervisor->pid = getpid();
 	supervisor->numWorkers = args.numWorkers;
+	supervisor->activeWorkers = 0;
 	supervisor->sigfd = -1;
 	supervisor->loop = NULL;
-	
-	on_exit(cleanup, supervisor);
 	
 	// Allocate and set up workers
 	supervisor->workers = calloc(supervisor->numWorkers, sizeof(struct worker_t));
@@ -358,6 +351,7 @@ int main(int argc, char* argv[])
 	if (supervisor->workers == NULL)
 	{
 		fprintf(stderr, "S - Error: Cannot allocate memory for workers: %s\n", strerror(errno));
+		free(supervisor);
 		exit(EXIT_FAILURE);
 	}
 	
@@ -367,16 +361,17 @@ int main(int argc, char* argv[])
 	}
 	
 	// Spawn worker processes
-	pid_t pid;
-	
 	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
 	{
 		int pidfd;
 		
-		pid = sfork(&pidfd);
+		pid_t pid = sfork(&pidfd);
 	
 		if (pid == 0) // Worker
 		{
+			free(supervisor->workers);
+			free(supervisor);
+			
 			int retval = doserver(&params);
 			
 			if (retval < 0)
@@ -389,7 +384,6 @@ int main(int argc, char* argv[])
 		else if (pid < 0) // Error
 		{
 			fprintf(stderr, "S - Error: Cannot fork worker process %u - %s\n", i, strerror(errno));
-			exit(EXIT_FAILURE);
 		}
 		else // Parent
 		{
@@ -398,14 +392,29 @@ int main(int argc, char* argv[])
 			supervisor->workers[i].number = i;
 			supervisor->workers[i].pid = pid;
 			supervisor->workers[i].pidfd = pidfd;
+			
+			supervisor->activeWorkers++;
 		}
 	}
 	
 	// Supervisor task begins here
-	fprintf(stderr, "S - All workers spawned\n");
+	on_exit(cleanup, supervisor);
 	
-	supervisor->activeWorkers = supervisor->numWorkers;
-	
+	// Check number of workers that were successfully spawned
+	if (supervisor->activeWorkers == 0)
+	{
+		fprintf(stderr, "S - Could not spawn any workers!\n");
+		exit(EXIT_FAILURE);
+	}
+	else if (supervisor->activeWorkers < supervisor->numWorkers)
+	{
+		fprintf(stderr, "S - Could only spawn %i workers instead of the requested %i\n", supervisor->activeWorkers, supervisor->numWorkers);
+	}
+	else
+	{
+		fprintf(stderr, "S - All workers spawned\n");
+	}
+
 	// Set up signals and the signalfd
 	sigset_t mask;
 	

@@ -8,6 +8,9 @@
 // errno
 #include <errno.h>
 
+// integer types and format specifiers
+#include <inttypes.h>
+
 // poll
 #include <poll.h>
 
@@ -64,10 +67,10 @@ enum arg_keys
 // argp options vector
 static struct argp_option argp_options[] =
 {
-	{"address",		KEY_ADDRESS,	"STRING",		0,			"Address of echo server (default 127.0.0.1)"},
+	{"address",		KEY_ADDRESS,	"STRING",		0,			"Address of Gopher server (default 127.0.0.1)"},
 	{"duration",	KEY_DURATION,	"NUMBER",		0,			"Duration of test in seconds (default 60)"},
 	{"port",		KEY_PORT,		"NUMBER",		0,			"Network port to use (default 8080)"},
-	{"request",		KEY_REQUEST,	"STRING",		0,			"Request string (default /)"},
+	{"request",		KEY_REQUEST,	"STRING",		0,			"Request string without trailing CRLF sequence (default /)"},
 	{"size",		KEY_SIZE,		"NUMBER",		0,			"Expected size of response in bytes (default 0 - do not check size)"},
 	{"timeout",		KEY_TIMEOUT,	"NUMBER",		0,			"Time to wait for socket state change before giving up in milliseconds (default 1000)"},
 	{"workers",		KEY_WORKERS,	"NUMBER",		0,			"Number of worker processes (default 1)"},
@@ -185,36 +188,50 @@ void sfree(void* ptr)
 }
 
 // *********************************************************************
-// Shared memory which is dynamically allocated and then freed at exit
+// Combined worker information and results
 // *********************************************************************
 
 struct result
 {
 	pid_t pid;
 	int status;
-	long total;
-	long successful;
-	long timeout;
-	long mismatch;
+	uint64_t total;
+	uint64_t successful;
+	uint64_t timeout;
+	uint64_t mismatch;
 };
 
-void cleanup(int code, void* arg)
+// *********************************************************************
+// cleanup functions for on_exit
+// *********************************************************************
+
+void cleanup_smalloc(int code, void* arg)
 {
-	struct result* results = arg;
-	
-	sfree(results);
+	sfree(arg);
+}
+
+void cleanup_malloc(int code, void* arg)
+{
+	free(arg);
 }
 
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBufferSize, struct result* results)
+void process(unsigned int id, struct result* results, struct arguments* args)
 {
-	// Initialize success counter in shared memory
-	results[id].total = 0;
-	results[id].successful = 0;
-	results[id].timeout = 0;
-	results[id].mismatch = 0;
+	// Allocate memory for the receive buffer
+	const size_t buf_len = 1024*1024;
+	
+	void* buf = malloc(buf_len);
+	
+	if (buf == NULL)
+	{
+		fprintf(stderr, "Error: Worker #%u cannot allocate receive buffer: %s\n", id, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	on_exit(cleanup_malloc, buf);
 	
 	// Prepare request vector which concatenates CRLF onto the end of the supplied string
 	char* requestEnd = "\r\n";
@@ -265,13 +282,14 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 	if (timerfd < 0)
 	{
 		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %s\n", id, strerror(errno));
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	if (timerfd_settime(timerfd, 0, &timer, NULL) < 0)
 	{
 		fprintf(stderr, "Error: Worker #%u cannot set timerfd time: %s\n", id, strerror(errno));
-		return -1;
+		close(timerfd);
+		exit(EXIT_FAILURE);
 	}
 	
 	// Initialize poll list used to monitor the socket and timerfd
@@ -294,7 +312,8 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 		if (sockfd < 0)
 		{
 			fprintf(stderr, "Error: Worker #%u cannot open socket: %s\n", id, strerror(errno));
-			return -1;
+			close(timerfd);
+			exit(EXIT_FAILURE);
 		}
 		
 		// Connect to the host
@@ -304,7 +323,9 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 			if (errno != EINPROGRESS)
 			{
 				fprintf(stderr, "Error: Worker #%u cannot connect to server: %s\n", id, strerror(errno));
-				return -1;
+				close(sockfd);
+				close(timerfd);
+				exit(EXIT_FAILURE);
 			}
 		}
 		
@@ -320,7 +341,9 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 			if (n < 0)
 			{
 				fprintf(stderr, "Error: Worker #%u cannot poll FDs: %s\n", id, strerror(errno));
-				return -1;
+				close(sockfd);
+				close(timerfd);
+				exit(EXIT_FAILURE);
 			}
 			else if (n == 0)
 			{
@@ -338,8 +361,6 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 			// If timerfd ticks, we're done after the next completion or timeout
 			if (poll_list[0].revents & POLLIN)
 			{
-				close(timerfd);
-				
 				// This causes the timer FD entry in the poll list to be ignored by subsequent calls to poll
 				poll_list[0].fd = -1;
 			}
@@ -353,13 +374,17 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 				if (n < 0)
 				{
 					fprintf(stderr, "Error: Worker #%u cannot write to socket: %s\n", id, strerror(errno));
-					return -1;
+					close(sockfd);
+					close(timerfd);
+					exit(EXIT_FAILURE);
 				}
 				else if (n != requestSize)
 				{
 					// The request should be small enough to send the full string in one go so something is wrong if not
 					fprintf(stderr, "Error: Worker #%u cannot write full request string\n", id);
-					return -1;
+					close(sockfd);
+					close(timerfd);
+					exit(EXIT_FAILURE);
 				}
 				
 				// Now we want to listen for a reply
@@ -370,7 +395,7 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 				// Read until it blocks
 				while (1)
 				{
-					ssize_t n = read(sockfd, rxBuffer, rxBufferSize);
+					ssize_t n = read(sockfd, buf, buf_len);
 					
 					if (n < 0)
 					{
@@ -382,7 +407,9 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 						else
 						{
 							fprintf(stderr, "Error: Worker #%u cannot read socket: %s\n", id, strerror(errno));
-							return -1;
+							close(sockfd);
+							close(timerfd);
+							exit(EXIT_FAILURE);
 						}
 					}
 					else if (n == 0)
@@ -426,11 +453,12 @@ int process(unsigned int id, struct arguments* args, void* rxBuffer, size_t rxBu
 		// If the timerfd ticked, we're done
 		if (poll_list[0].fd < 0)
 		{
+			close(timerfd);
 			break;
 		}
 	}
 	
-	return 0;
+	exit(EXIT_SUCCESS);
 }
 
 // *********************************************************************
@@ -463,7 +491,7 @@ int main(int argc, char* argv[])
 	fprintf(stderr, "Timeout: %i milliseconds\n", args.timeout);
 	fprintf(stderr, "Workers: %i\n", args.workers);
 	
-	// Allocate shared memory
+	// Allocate and initialize shared memory
 	struct result* results = (struct result*)scalloc(args.workers, sizeof(struct result));
 	
 	if (results == NULL)
@@ -472,51 +500,58 @@ int main(int argc, char* argv[])
 		exit(EXIT_FAILURE);
 	}
 	
-	on_exit(cleanup, results);
+	for (unsigned int i = 0; i < args.workers; i++)
+	{
+		results[i].pid = -1;
+		results[i].status = -1;
+		
+		results[i].total = 0;
+		results[i].successful = 0;
+		results[i].timeout = 0;
+		results[i].mismatch = 0;
+	}
+	
+	on_exit(cleanup_smalloc, results);
 	
 	// Spawn worker processes
+	unsigned int active = 0;
+	
 	for (unsigned int i = 0; i < args.workers; i++)
 	{
 		pid_t pid = fork();
 	
 		if (pid == 0) // Worker
 		{
-			size_t rxBufferSize = 1024*1024;
-			void* rxBuffer = malloc(rxBufferSize);
-			
-			if (rxBuffer == NULL)
-			{
-				fprintf(stderr, "Error: Worker #%i cannot allocate receive buffer: %s\n", i, strerror(errno));
-				exit(EXIT_FAILURE);
-			}
-			
-			int retval = process(i, &args, rxBuffer, rxBufferSize, results);
-			
-			free(rxBuffer);
-			
-			if (retval < 0)
-			{
-				exit(EXIT_FAILURE);
-			}
-			else
-			{
-				exit(EXIT_SUCCESS);
-			}
+			// This does not return
+			process(i, results, &args);
 		}
 		else if (pid < 0) // Error
 		{
-			fprintf(stderr, "Error: Cannot create worker process #%i: %s\n", i, strerror(errno));
-			exit(EXIT_FAILURE);
+			fprintf(stderr, "Error: Cannot fork worker process #%u: %s\n", i, strerror(errno));
 		}
 		else // Parent
 		{
 			// Store mapping between our internal id and the process id
 			results[i].pid = pid;
-			results[i].status = -1;
+			
+			active++;
 		}
 	}
-
-	fprintf(stderr, "All worker processes dispatched, waiting for results\n");
+	
+	// Report number of successful workers
+	if (active == 0)
+	{
+		fprintf(stderr, "No worker processes could be dispatched!\n");
+		exit(EXIT_FAILURE);
+	}
+	else if (active < args.workers)
+	{
+		fprintf(stderr, "Only %u worker(s) could be dispatched instead of the desired %u, waiting for results\n", active, args.workers);
+	}
+	else
+	{
+		fprintf(stderr, "All worker processes dispatched, waiting for results\n");
+	}
 	
 	// Wait for workers to exit
 	pid_t pid;
@@ -531,7 +566,7 @@ int main(int argc, char* argv[])
 			{
 				if (status != 0)
 				{
-					fprintf(stderr, "Warning: Worker process #%i (PID %i) exited with status %i\n", i, pid, status);
+					fprintf(stderr, "Warning: Worker process #%u (PID %i) exited with status %i\n", i, pid, status);
 				}
 				
 				results[i].status = status;
@@ -550,7 +585,7 @@ int main(int argc, char* argv[])
 		.mismatch = 0
 	};
 	
-	int count = 0;
+	unsigned int successes = 0;
 	
 	for (unsigned int i = 0; i < args.workers; i++)
 	{
@@ -561,33 +596,33 @@ int main(int argc, char* argv[])
 			final.timeout += results[i].timeout;
 			final.mismatch += results[i].mismatch;
 
-			count++;
+			successes++;
 		}
 	}
 
 	// Report count of successes
-	fprintf(stderr, "%i process(es) exited successfully\n", count);
+	fprintf(stderr, "%u process(es) exited successfully\n", successes);
 	
-	if (count == 0)
+	if (successes == 0)
 	{
 		fprintf(stderr, "Because no processes exited successfully, a result cannot be calculated\n");
 		exit(EXIT_FAILURE);
 	}
 
 	// Do the final calculation and report the final results
-	printf("Number of attempts: %li\n", final.total);
-	printf("Rate of attempts: %li per second\n", final.total / args.duration);
-	printf("Number of successful requests: %li\n", final.successful);
-	printf("Rate of successful requests: %li per second\n", final.successful / args.duration);
+	printf("Number of attempts: %" PRIu64 "\n", final.total);
+	printf("Rate of attempts: %" PRIu64 " per second\n", final.total / args.duration);
+	printf("Number of successful requests: %" PRIu64 "\n", final.successful);
+	printf("Rate of successful requests: %" PRIu64 " per second\n", final.successful / args.duration);
 	
 	if (final.timeout > 0)
 	{
-		printf("Number of timeouts: %li\n", final.timeout);
+		printf("Number of timeouts: %" PRIu64 "\n", final.timeout);
 	}
 	
 	if (final.mismatch > 0)
 	{
-		printf("Number of size mismatches: %li\n", final.mismatch);
+		printf("Number of size mismatches: %" PRIu64 "\n", final.mismatch);
 	}
 	
 	exit(EXIT_SUCCESS);
