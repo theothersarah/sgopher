@@ -1,6 +1,6 @@
 #pragma once
 
-struct server_params
+struct server_params_t
 {
 	// Network
 	const char* hostname;
@@ -15,4 +15,4 @@ struct server_params
 	const char* indexfile;
 };
 
-__attribute__((noreturn)) void server_process(struct server_params* params);
+__attribute__((noreturn)) void server_process(struct server_params_t* params);

@@ -53,7 +53,7 @@ const char* argp_program_bug_address = "<contact@sarahwatt.ca>";
 static char argp_doc[] = "Benchmark tool for Gopher servers";
 
 // Constants for arguments
-enum arg_keys
+enum arg_keys_t
 {
 	KEY_ADDRESS = 'a',
 	KEY_BUFFERSIZE = 'b',
@@ -80,7 +80,7 @@ static struct argp_option argp_options[] =
 };
 
 // Program arguments
-struct arguments
+struct args_t
 {
 	char* address;
 	unsigned int buffersize;
@@ -95,7 +95,7 @@ struct arguments
 // Argp option parser
 static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 {
-	struct arguments* args = state->input;
+	struct args_t* args = state->input;
 
 	switch (key)
 	{
@@ -169,7 +169,7 @@ static void cleanup_malloc(int code, void* arg)
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-__attribute__((noreturn)) static void worker_process(unsigned int id, struct results_t* results, struct arguments* args)
+__attribute__((noreturn)) static void worker_process(unsigned int id, struct results_t* results, struct args_t* args)
 {
 	// Allocate memory for the receive buffer
 	const size_t buf_len = args->buffersize;
@@ -421,15 +421,17 @@ int main(int argc, char* argv[])
 	struct argp argp_parser = {argp_options, argp_parse_options, 0, argp_doc};
 	
 	// Default argument values
-	struct arguments args;
-	args.address = "127.0.0.1";
-	args.buffersize = 65536;
-	args.duration = 60;
-	args.port = 70;
-	args.request = "/";
-	args.size = 0;
-	args.timeout = 1000;
-	args.numWorkers = 1;
+	struct args_t args =
+	{
+		.address = "127.0.0.1",
+		.buffersize = 65536,
+		.duration = 60,
+		.port = 70,
+		.request = "/",
+		.size = 0,
+		.timeout = 1000,
+		.numWorkers = 1
+	};
 
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);

@@ -23,7 +23,7 @@
 #define BUFFER_LENGTH 65536
 #define BUFFER_BUFFER 4096
 
-struct snbuffer
+struct snbuffer_t
 {
 	// file descriptor to flush the buffer to
 	int fd;
@@ -38,29 +38,29 @@ struct snbuffer
 	size_t size;
 };
 
-static inline void snbuffer_setup(struct snbuffer* buf, int fd, char* base, size_t len)
+static inline void snbuffer_setup(struct snbuffer_t* snbuffer, int fd, char* base, size_t len)
 {
-	buf->fd = fd;
+	snbuffer->fd = fd;
 	
-	buf->base = base;
-	buf->len = len;
+	snbuffer->base = base;
+	snbuffer->len = len;
 	
-	buf->pos = base;
-	buf->size = len;
+	snbuffer->pos = base;
+	snbuffer->size = len;
 }
 
-void snbuffer_flush(struct snbuffer* buf)
+void snbuffer_flush(struct snbuffer_t* snbuffer)
 {
-	size_t count = (size_t)(buf->pos - buf->base);
+	size_t count = (size_t)(snbuffer->pos - snbuffer->base);
 	
 	if (count > 0)
 	{
 		// Potentially requires multiple writes especially if the FD is a socket
-		char* from = buf->base;
+		char* from = snbuffer->base;
 		
 		do
 		{
-			ssize_t n = write(buf->fd, from, count);
+			ssize_t n = write(snbuffer->fd, from, count);
 			
 			if (n < 0)
 			{
@@ -74,25 +74,25 @@ void snbuffer_flush(struct snbuffer* buf)
 		while(count > 0);
 		
 		// Reset buffer
-		buf->pos = buf->base;
-		buf->size = buf->len;
+		snbuffer->pos = snbuffer->base;
+		snbuffer->size = snbuffer->len;
 	}
 }
 
-void snbuffer_push(struct snbuffer* buf, size_t leftover, int size)
+void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
 {
 	if (size > 0)
 	{
 		// >= is used to take the implied null terminator into account: if size == buf->size, one character is actually cut off in favor of the null
-		if ((size_t)size >= buf->size)
+		if ((size_t)size >= snbuffer->size)
 		{
 			fprintf(stderr, "%i (gopherlist) - Warning: Discarded snprintf result due to size\n", getpid());
 		}
 		else
 		{
 			// Update position and remaining size for next call
-			buf->pos += size;
-			buf->size -= (size_t)size;
+			snbuffer->pos += size;
+			snbuffer->size -= (size_t)size;
 		}
 	}
 	else if (size < 0)
@@ -102,9 +102,9 @@ void snbuffer_push(struct snbuffer* buf, size_t leftover, int size)
 	}
 	
 	// Check if a flush is necessary to free space for the next call
-	if (buf->size < leftover)
+	if (snbuffer->size < leftover)
 	{
-		snbuffer_flush(buf);
+		snbuffer_flush(snbuffer);
 	}
 }
 
@@ -136,13 +136,13 @@ static int compare_strings(const void* pa, const void* pb)
 // This must be pre-sorted according to strcmp rules for bsearch
 // Default for a non-executable, non-directory file is 9 so anything of that type should not be here
 
-struct ext_entry
+struct ext_entry_t
 {
 	const char* ext;
 	const char type;
 };
 
-static const struct ext_entry ext_table[] =
+static const struct ext_entry_t ext_table[] =
 {
 	{"bmp", 'I'},
 	{"c", '0'},
@@ -166,8 +166,8 @@ static const struct ext_entry ext_table[] =
 // Comparison function for the file extension list
 static int compare_ext_entry(const void* pa, const void* pb)
 {
-	const struct ext_entry* entry1 = pa;
-	const struct ext_entry* entry2 = pb;
+	const struct ext_entry_t* entry1 = pa;
+	const struct ext_entry_t* entry2 = pb;
 	
 	return strcmp(entry1->ext, entry2->ext);
 }
@@ -295,12 +295,12 @@ int main()
 	// Prepare a buffer for the output to produce a minimum number of writes
 	char buffer[BUFFER_LENGTH];
 	
-	struct snbuffer buf;
+	struct snbuffer_t snbuffer;
 	
-	snbuffer_setup(&buf, STDOUT_FILENO, buffer, BUFFER_LENGTH);
+	snbuffer_setup(&snbuffer, STDOUT_FILENO, buffer, BUFFER_LENGTH);
 	
 	// Build header, which includes a "parent directory" link if the selector indicated a subdirectory
-	snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "iDirectory listing of %s%s\r\n", env_hostname, selector));
+	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of %s%s\r\n", env_hostname, selector));
 	
 	if (n > 0)
 	{
@@ -311,10 +311,10 @@ int main()
 			slash = strchr(slash, '/') + 1;
 		}
 		
-		snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
 	}
 	
-	snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "i\r\n"));
+	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\n"));
 	
 	// Build list of filenames
 	for (size_t i = 0; i < filenames_count; i++)
@@ -362,12 +362,12 @@ int main()
 					extension++;
 					
 					// Search the table for a match
-					struct ext_entry key =
+					const struct ext_entry_t key =
 					{
 						.ext = extension
 					};
 					
-					const struct ext_entry* found = bsearch(&key, ext_table, sizeof(ext_table)/sizeof(struct ext_entry), sizeof(struct ext_entry), compare_ext_entry);
+					const struct ext_entry_t* found = bsearch(&key, ext_table, sizeof(ext_table)/sizeof(struct ext_entry_t), sizeof(struct ext_entry_t), compare_ext_entry);
 					
 					if (found != NULL)
 					{
@@ -388,13 +388,13 @@ int main()
 		}
 		
 		// Build the menu line
-		snbuffer_push(&buf, BUFFER_BUFFER, snprintf(buf.pos, buf.size, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, selector, filename, env_hostname, env_port));
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, selector, filename, env_hostname, env_port));
 	}
 	
 	// Add the footer and output the buffer
-	snbuffer_push(&buf, 0, snprintf(buf.pos, buf.size, ".\r\n"));
+	snbuffer_push(&snbuffer, 0, snprintf(snbuffer.pos, snbuffer.size, ".\r\n"));
 	
-	snbuffer_flush(&buf);
+	snbuffer_flush(&snbuffer);
 	
 	exit(EXIT_SUCCESS);
 }

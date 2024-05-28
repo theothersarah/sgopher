@@ -44,7 +44,7 @@
 // *********************************************************************
 
 // Constants for arguments
-enum arg_keys
+enum arg_keys_t
 {
 	KEY_DIRECTORY = 'd',
 	KEY_HOSTNAME = 'h',
@@ -56,7 +56,7 @@ enum arg_keys
 };
 
 // Program arguments
-struct arguments
+struct args_t
 {
 	const char* directory;
 	const char* hostname;
@@ -90,7 +90,7 @@ const char* argp_program_bug_address = "<contact@sarahwatt.ca>";
 //
 static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 {
-	struct arguments* args = state->input;
+	struct args_t* args = state->input;
 
 	switch (key)
 	{
@@ -139,7 +139,7 @@ struct supervisor_t
 	unsigned int numWorkers;
 	unsigned int activeWorkers;
 	int sigfd;
-	struct sepoll_loop* loop;
+	struct sepoll_t* loop;
 };
 
 // *********************************************************************
@@ -275,14 +275,16 @@ int main(int argc, char* argv[])
 	struct argp argp_parser = {argp_options, argp_parse_options, 0, argp_doc};
 	
 	// Default argument values
-	struct arguments args;
-	args.directory = "./gopherroot";
-	args.hostname = "localhost";
-	args.indexfile = ".gophermap";
-	args.maxClients = 4096;
-	args.port = 70;
-	args.timeout = 10;
-	args.numWorkers = 1;
+	struct args_t args =
+	{
+		.directory = "./gopherroot",
+		.hostname = "localhost",
+		.indexfile = ".gophermap",
+		.maxClients = 4096,
+		.port = 70,
+		.timeout = 10,
+		.numWorkers = 1
+	};
 
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
@@ -298,13 +300,15 @@ int main(int argc, char* argv[])
 	
 	// Copy arguments to server parameters
 	// Why do it like this? Just in case they are parsed from a configuration file in the future instead of the command line
-	struct server_params params;
-	params.hostname = args.hostname;
-	params.directory = args.directory;
-	params.port = args.port;
-	params.maxClients = args.maxClients;
-	params.indexfile = args.indexfile;
-	params.timeout = args.timeout;
+	struct server_params_t params =
+	{
+		.hostname = args.hostname,
+		.directory = args.directory,
+		.port = args.port,
+		.maxClients = args.maxClients,
+		.indexfile = args.indexfile,
+		.timeout = args.timeout
+	};
 	
 	// Where we're going we only need stderr
 	int devnull = open("/dev/null", O_RDWR);

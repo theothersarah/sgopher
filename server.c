@@ -80,7 +80,7 @@
 // *********************************************************************
 // Definitions
 // *********************************************************************
-struct client_state
+struct client_t
 {
 	// Client session information
 	int socket;
@@ -100,15 +100,15 @@ struct client_state
 	int dirfd;
 	int pidfd;
 	
-	LIST_ENTRY(client_state) entry;
+	LIST_ENTRY(client_t) entry;
 };
 
-LIST_HEAD(client_list, client_state);
+LIST_HEAD(client_list_t, client_t);
 
-struct server_state
+struct server_t
 {
 	// Configuration parameters
-	struct server_params* params;
+	struct server_params_t* params;
 	
 	// File descriptors
 	int directory;
@@ -117,17 +117,17 @@ struct server_state
 	int timerfd;
 
 	// Event loop
-	struct sepoll_loop* loop;
+	struct sepoll_t* loop;
 	
 	// Clients
 	unsigned int numClients;
-	struct client_list clients;
+	struct client_list_t clients;
 };
 
 // *********************************************************************
 // Disconnect a client from the server
 // *********************************************************************
-static void client_disconnect(struct server_state* server, struct client_state* client)
+static void client_disconnect(struct server_t* server, struct client_t* client)
 {
 	// Deal with the open file, if any
 	if (client->file >= 0)
@@ -169,8 +169,8 @@ static inline void pidfd_kill(int pidfd)
 // *********************************************************************
 static void client_pidfd(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct server_state* server = userdata1;
-	struct client_state* client = userdata2;
+	struct server_t* server = userdata1;
+	struct client_t* client = userdata2;
 	
 	// Now that the process has ended we can boot the client
 	client_disconnect(server, client);
@@ -185,8 +185,8 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 // *********************************************************************
 static void client_socket(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct server_state* server = userdata1;
-	struct client_state* client = userdata2;
+	struct server_t* server = userdata1;
+	struct client_t* client = userdata2;
 	
 	if (events & EPOLLIN)
 	{
@@ -585,7 +585,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 static void server_socket(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct server_state* server = userdata1;
+	struct server_t* server = userdata1;
 	
 	if (events & EPOLLIN)
 	{
@@ -621,13 +621,14 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			}
 			
 			// Allocate a new client data structure
-			struct client_state* client = malloc(sizeof(struct client_state));
+			struct client_t* client = malloc(sizeof(struct client_t));
 			
 			if (client == NULL)
 			{
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					close(client_fd);
-					continue;
+				fprintf(stderr, "%i - Error: Cannot allocate memory for new client: %s\n", getpid(), strerror(errno));
+				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				close(client_fd);
+				continue;
 			}
 			
 			// Initialize the client, add their socket FD to the watch list, and add the client to the list
@@ -665,7 +666,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 static void server_signal(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct server_state* server = userdata1;
+	struct server_t* server = userdata1;
 	
 	while (1)
 	{
@@ -699,7 +700,7 @@ static void server_signal(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 static void server_timer(int fd, unsigned int events, void* userdata1, void* userdata2)
 {
-	struct server_state* server = userdata1;
+	struct server_t* server = userdata1;
 	
 	// Have to read 8 bytes from the timer to reset it even if I don't care about the contents
 	uint64_t buffer;
@@ -712,11 +713,11 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 	// Check for connection timeout
 	time_t currentTime = time(NULL);
 
-	struct client_state* client = LIST_FIRST(&server->clients);
+	struct client_t* client = LIST_FIRST(&server->clients);
 	
 	while (client != NULL)
 	{
-		struct client_state* next = LIST_NEXT(client, entry);
+		struct client_t* next = LIST_NEXT(client, entry);
 		
 		if (client->pidfd >= 0)
 		{
@@ -985,7 +986,7 @@ static int open_timerfd(time_t interval)
 // *********************************************************************
 static void cleanup(int code, void* arg)
 {
-	struct server_state* server = arg;
+	struct server_t* server = arg;
 	
 	// Get rid of event loop
 	if (server->loop != NULL)
@@ -994,11 +995,11 @@ static void cleanup(int code, void* arg)
 	}
 	
 	// Disconnect all clients
-	struct client_state* client = LIST_FIRST(&server->clients);
+	struct client_t* client = LIST_FIRST(&server->clients);
 	
 	while (client != NULL)
 	{
-		struct client_state* next = LIST_NEXT(client, entry);
+		struct client_t* next = LIST_NEXT(client, entry);
 		
 		// Kill CGI process, if any
 		if (client->pidfd >= 0)
@@ -1054,7 +1055,7 @@ static void cleanup(int code, void* arg)
 // *********************************************************************
 // Server setup and loop
 // *********************************************************************
-void server_process(struct server_params* params)
+void server_process(struct server_params_t* params)
 {
 	// Set up signals
 	if (setupsignals() < 0)
@@ -1069,7 +1070,7 @@ void server_process(struct server_params* params)
 	}
 	
 	// Allocate and set up the server state
-	struct server_state* server = malloc(sizeof(struct server_state));
+	struct server_t* server = malloc(sizeof(struct server_t));
 	
 	if (server == NULL)
 	{

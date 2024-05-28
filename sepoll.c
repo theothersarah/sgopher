@@ -40,7 +40,7 @@ struct sepoll_callback
 
 LIST_HEAD(callback_list, sepoll_callback);
 
-struct sepoll_loop
+struct sepoll_t
 {
 	// Tree for active callbacks, sorted by file descriptor
 	void* callbacks_tree;
@@ -80,7 +80,7 @@ static int compare_callback_fd(const void* pa, const void* pb)
 	}
 }
 
-static struct sepoll_callback* sepoll_find_fd(struct sepoll_loop* loop, int fd)
+static struct sepoll_callback* sepoll_find_fd(struct sepoll_t* loop, int fd)
 {
 	struct sepoll_callback searchfd =
 	{
@@ -106,10 +106,10 @@ static struct sepoll_callback* sepoll_find_fd(struct sepoll_loop* loop, int fd)
 // simultaneously.
 // *********************************************************************
 
-struct sepoll_loop* sepoll_create(int size)
+struct sepoll_t* sepoll_create(int size)
 {
 	// Allocate memory for opaque structure
-	struct sepoll_loop* loop = malloc(sizeof(struct sepoll_loop));
+	struct sepoll_t* loop = malloc(sizeof(struct sepoll_t));
 	
 	if (loop == NULL)
 	{
@@ -145,7 +145,7 @@ struct sepoll_loop* sepoll_create(int size)
 	return loop;
 }
 
-int sepoll_resize(struct sepoll_loop* loop, int size)
+int sepoll_resize(struct sepoll_t* loop, int size)
 {
 	if (loop == NULL)
 	{
@@ -175,7 +175,7 @@ int sepoll_resize(struct sepoll_loop* loop, int size)
 	return 0;
 }
 
-void sepoll_destroy(struct sepoll_loop* loop)
+void sepoll_destroy(struct sepoll_t* loop)
 {
 	if (loop == NULL)
 	{
@@ -209,7 +209,7 @@ void sepoll_destroy(struct sepoll_loop* loop)
 // Add, modify, and remove an event
 // *********************************************************************
 
-int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
 	// Allocate memory for the callback and initialize it
 	struct sepoll_callback* callback = malloc(sizeof(struct sepoll_callback));
@@ -251,7 +251,7 @@ int sepoll_add(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 	return 0;
 }
 
-int sepoll_mod(struct sepoll_loop* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+int sepoll_mod(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
 	
@@ -278,7 +278,7 @@ int sepoll_mod(struct sepoll_loop* loop, int fd, unsigned int events, void (*fun
 	return 0;
 }
 
-int sepoll_mod_events(struct sepoll_loop* loop, int fd, unsigned int events)
+int sepoll_mod_events(struct sepoll_t* loop, int fd, unsigned int events)
 {
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
 	
@@ -296,7 +296,7 @@ int sepoll_mod_events(struct sepoll_loop* loop, int fd, unsigned int events)
 	return epoll_ctl(loop->epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 
-int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+int sepoll_mod_userdata(struct sepoll_t* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
 	
@@ -312,7 +312,7 @@ int sepoll_mod_userdata(struct sepoll_loop* loop, int fd, void (*function)(int, 
 	return 0;
 }
 
-int sepoll_remove(struct sepoll_loop* loop, int fd)
+int sepoll_remove(struct sepoll_t* loop, int fd)
 {
 	// Get the event data associated with the file descriptor
 	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
@@ -337,7 +337,7 @@ int sepoll_remove(struct sepoll_loop* loop, int fd)
 // Functions for entering the event loop
 // *********************************************************************
 
-static inline int sepoll_iter(struct sepoll_loop* loop, int timeout)
+static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 {
 	// Wait on epoll events or a timeout
 	int n = epoll_wait(loop->epollfd, loop->epoll_events, loop->epoll_events_size, timeout);
@@ -375,7 +375,7 @@ static inline int sepoll_iter(struct sepoll_loop* loop, int timeout)
 	return n;
 }
 
-int sepoll_enter(struct sepoll_loop* loop)
+int sepoll_enter(struct sepoll_t* loop)
 {
 	loop->run = true;
 	
@@ -393,12 +393,12 @@ int sepoll_enter(struct sepoll_loop* loop)
 	return 0;
 }
 
-void sepoll_exit(struct sepoll_loop* loop)
+void sepoll_exit(struct sepoll_t* loop)
 {
 	loop->run = false;
 }
 
-int sepoll_once(struct sepoll_loop* loop, int timeout)
+int sepoll_once(struct sepoll_t* loop, int timeout)
 {
 	return sepoll_iter(loop, timeout);
 }
