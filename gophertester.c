@@ -68,14 +68,14 @@ enum arg_keys
 // argp options vector
 static struct argp_option argp_options[] =
 {
-	{"address",		KEY_ADDRESS,	"STRING",		0,			"Address of Gopher server (default 127.0.0.1)"},
-	{"buffersize",	KEY_BUFFERSIZE,	"NUMBER",		0,			"Size of receiver buffer to use in bytes (default 65536 bytes)"},
-	{"duration",	KEY_DURATION,	"NUMBER",		0,			"Duration of test in seconds (default 60)"},
-	{"port",		KEY_PORT,		"NUMBER",		0,			"Network port to use (default 8080)"},
-	{"request",		KEY_REQUEST,	"STRING",		0,			"Request string without trailing CRLF sequence (default /)"},
-	{"size",		KEY_SIZE,		"NUMBER",		0,			"Expected size of response in bytes, or 0 for no size check (default 0 bytes - do not check size)"},
-	{"timeout",		KEY_TIMEOUT,	"NUMBER",		0,			"Time to wait for socket state change before giving up in milliseconds, or a negative number for no timeout (default 1000 milliseconds)"},
-	{"workers",		KEY_WORKERS,	"NUMBER",		0,			"Number of worker processes (default 1)"},
+	{"address",		KEY_ADDRESS,	"STRING",		0,		"Address of Gopher server (default 127.0.0.1)"},
+	{"buffersize",	KEY_BUFFERSIZE,	"NUMBER",		0,		"Size of receive buffer to use in bytes (default 65536 bytes)"},
+	{"duration",	KEY_DURATION,	"NUMBER",		0,		"Duration of test in seconds (default 60 seconds)"},
+	{"port",		KEY_PORT,		"NUMBER",		0,		"Network port to use (default port 70)"},
+	{"request",		KEY_REQUEST,	"STRING",		0,		"Request string without trailing CRLF sequence (default /)"},
+	{"size",		KEY_SIZE,		"NUMBER",		0,		"Expected size of response in bytes, or 0 for no size check (default 0 bytes - do not check size)"},
+	{"timeout",		KEY_TIMEOUT,	"NUMBER",		0,		"Time to wait for socket state change before giving up in milliseconds, or a negative number for no timeout (default 1000 milliseconds)"},
+	{"workers",		KEY_WORKERS,	"NUMBER",		0,		"Number of worker processes (default 1 worker)"},
 	{0}
 };
 
@@ -89,7 +89,7 @@ struct arguments
 	char* request;
 	unsigned int size;
 	int timeout;
-	unsigned int workers;
+	unsigned int numWorkers;
 };
 
 // Argp option parser
@@ -121,7 +121,7 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 		sscanf(arg, "%i", &args->timeout);
 		break;
 	case KEY_WORKERS:
-		sscanf(arg, "%u", &args->workers);
+		sscanf(arg, "%u", &args->numWorkers);
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -134,14 +134,22 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 // Combined worker information and results
 // *********************************************************************
 
-struct result
+struct results_t
 {
-	pid_t pid;
-	int status;
 	uint64_t total;
 	uint64_t successful;
 	uint64_t timeout;
 	uint64_t mismatch;
+};
+
+struct worker_t
+{
+	// Worker information
+	pid_t pid;
+	int status;
+	
+	// Results from that worker
+	struct results_t results;
 };
 
 // *********************************************************************
@@ -161,7 +169,7 @@ static void cleanup_malloc(int code, void* arg)
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-__attribute__((noreturn)) static void worker_process(unsigned int id, struct result* results, struct arguments* args)
+__attribute__((noreturn)) static void worker_process(unsigned int id, struct results_t* results, struct arguments* args)
 {
 	// Allocate memory for the receive buffer
 	const size_t buf_len = args->buffersize;
@@ -244,7 +252,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	while (1)
 	{
 		// Score an attempt
-		results[id].total++;
+		results->total++;
 		
 		// Accumulator for received file size
 		ssize_t received = 0;
@@ -291,12 +299,12 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 			else if (n == 0)
 			{
 				// Report a timeout only the first time it happens and then score it
-				if (results[id].timeout == 0)
+				if (results->timeout == 0)
 				{
 					fprintf(stderr, "Warning: Worker #%u timed out\n", id);
 				}
 				
-				results[id].timeout++;
+				results->timeout++;
 				
 				break;
 			}
@@ -361,17 +369,17 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 						if (args->size > 0 && received != args->size)
 						{
 							// Report a size mismatch only the first time it happens and then score it
-							if (results[id].mismatch == 0)
+							if (results->mismatch == 0)
 							{
 								fprintf(stderr, "Warning: Worker #%u size mismatch\n", id);
 							}
 							
-							results[id].mismatch++;
+							results->mismatch++;
 						}
 						else
 						{
 							// Score a successful result
-							results[id].successful++;
+							results->successful++;
 						}
 						
 						// This has no relevance to poll itself, it's just used as a convenient way to pass on that we need to do a second break in a moment
@@ -421,7 +429,7 @@ int main(int argc, char* argv[])
 	args.request = "/";
 	args.size = 0;
 	args.timeout = 1000;
-	args.workers = 1;
+	args.numWorkers = 1;
 
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
@@ -434,41 +442,41 @@ int main(int argc, char* argv[])
 	fprintf(stderr, "Request: %s\n", args.request);
 	fprintf(stderr, "Expected size: %u bytes\n", args.size);
 	fprintf(stderr, "Timeout: %u milliseconds\n", args.timeout);
-	fprintf(stderr, "Workers: %u\n", args.workers);
+	fprintf(stderr, "Number of workers: %u\n", args.numWorkers);
 	
 	// Allocate and initialize shared memory
-	struct result* results = (struct result*)scalloc(args.workers, sizeof(struct result));
+	struct worker_t* workers = scalloc(args.numWorkers, sizeof(struct worker_t));
 	
-	if (results == NULL)
+	if (workers == NULL)
 	{
 		fprintf(stderr, "Error: Cannot allocate shared memory for results: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	
-	for (unsigned int i = 0; i < args.workers; i++)
+	for (unsigned int i = 0; i < args.numWorkers; i++)
 	{
-		results[i].pid = -1;
-		results[i].status = -1;
+		workers[i].pid = -1;
+		workers[i].status = -1;
 		
-		results[i].total = 0;
-		results[i].successful = 0;
-		results[i].timeout = 0;
-		results[i].mismatch = 0;
+		workers[i].results.total = 0;
+		workers[i].results.successful = 0;
+		workers[i].results.timeout = 0;
+		workers[i].results.mismatch = 0;
 	}
 	
-	on_exit(cleanup_smalloc, results);
+	on_exit(cleanup_smalloc, workers);
 	
 	// Spawn worker processes
-	unsigned int active = 0;
+	unsigned int activeWorkers = 0;
 	
-	for (unsigned int i = 0; i < args.workers; i++)
+	for (unsigned int i = 0; i < args.numWorkers; i++)
 	{
 		pid_t pid = fork();
 	
 		if (pid == 0) // Worker
 		{
 			// This does not return
-			worker_process(i, results, &args);
+			worker_process(i, &workers[i].results, &args);
 		}
 		else if (pid < 0) // Error
 		{
@@ -477,21 +485,21 @@ int main(int argc, char* argv[])
 		else // Parent
 		{
 			// Store mapping between our internal id and the process id
-			results[i].pid = pid;
+			workers[i].pid = pid;
 			
-			active++;
+			activeWorkers++;
 		}
 	}
 	
 	// Report number of successful workers
-	if (active == 0)
+	if (activeWorkers == 0)
 	{
 		fprintf(stderr, "No worker processes could be dispatched!\n");
 		exit(EXIT_FAILURE);
 	}
-	else if (active < args.workers)
+	else if (activeWorkers < args.numWorkers)
 	{
-		fprintf(stderr, "Only %u worker(s) could be dispatched instead of the desired %u, waiting for results\n", active, args.workers);
+		fprintf(stderr, "Only %u worker(s) could be dispatched instead of the desired %u, waiting for results\n", activeWorkers, args.numWorkers);
 	}
 	else
 	{
@@ -505,16 +513,16 @@ int main(int argc, char* argv[])
 	while (pid = wait(&status), pid > 0)
 	{
 		// Search process table to find out which worker had just exited
-		for (unsigned int i = 0; i < args.workers; i++)
+		for (unsigned int i = 0; i < args.numWorkers; i++)
 		{
-			if (results[i].pid == pid)
+			if (workers[i].pid == pid)
 			{
 				if (status != 0)
 				{
 					fprintf(stderr, "Warning: Worker process #%u (PID %i) exited with status %i\n", i, pid, status);
 				}
 				
-				results[i].status = status;
+				workers[i].status = status;
 
 				break;
 			}
@@ -522,7 +530,7 @@ int main(int argc, char* argv[])
 	}
 	
 	// Sum the results from workers that successfully exited
-	struct result final =
+	struct results_t results =
 	{
 		.total = 0,
 		.successful = 0,
@@ -532,14 +540,14 @@ int main(int argc, char* argv[])
 	
 	unsigned int successes = 0;
 	
-	for (unsigned int i = 0; i < args.workers; i++)
+	for (unsigned int i = 0; i < args.numWorkers; i++)
 	{
-		if (results[i].status == 0)
+		if (workers[i].status == 0)
 		{
-			final.total += results[i].total;
-			final.successful += results[i].successful;
-			final.timeout += results[i].timeout;
-			final.mismatch += results[i].mismatch;
+			results.total += workers[i].results.total;
+			results.successful += workers[i].results.successful;
+			results.timeout += workers[i].results.timeout;
+			results.mismatch += workers[i].results.mismatch;
 
 			successes++;
 		}
@@ -555,19 +563,19 @@ int main(int argc, char* argv[])
 	}
 
 	// Do the final calculation and report the final results
-	printf("Number of attempts: %" PRIu64 "\n", final.total);
-	printf("Rate of attempts: %" PRIu64 " per second\n", final.total / args.duration);
-	printf("Number of successful requests: %" PRIu64 "\n", final.successful);
-	printf("Rate of successful requests: %" PRIu64 " per second\n", final.successful / args.duration);
+	printf("Number of attempts: %" PRIu64 "\n", results.total);
+	printf("Rate of attempts: %" PRIu64 " per second\n", results.total / args.duration);
+	printf("Number of successful requests: %" PRIu64 "\n", results.successful);
+	printf("Rate of successful requests: %" PRIu64 " per second\n", results.successful / args.duration);
 	
-	if (final.timeout > 0)
+	if (results.timeout > 0)
 	{
-		printf("Number of timeouts: %" PRIu64 "\n", final.timeout);
+		printf("Number of timeouts: %" PRIu64 "\n", results.timeout);
 	}
 	
-	if (final.mismatch > 0)
+	if (results.mismatch > 0)
 	{
-		printf("Number of size mismatches: %" PRIu64 "\n", final.mismatch);
+		printf("Number of size mismatches: %" PRIu64 "\n", results.mismatch);
 	}
 	
 	exit(EXIT_SUCCESS);

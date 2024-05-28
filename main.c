@@ -70,13 +70,13 @@ struct arguments
 // options vector
 static struct argp_option argp_options[] =
 {
-	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from. Defaults to ./gopherroot"},
-	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server, used for generation of gophermaps. Defaults to localhost"},
-	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap"},
-	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process. Defaults to 4096"},
-	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port. Defaults to 70"},
-	{"timeout",		KEY_TIMEOUT,	"NUMBER",	0,	"Time in seconds before booting inactive client. Defaults to 10"},
-	{"workers",		KEY_WORKERS,	"NUMBER",	0,	"Number of worker processes. Defaults to 1"},
+	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from (default ./gopherroot)"},
+	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server, used for generation of gophermaps (default localhost)"},
+	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory (default .gophermap)"},
+	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process (default 4096 clients)"},
+	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port (default port 70)"},
+	{"timeout",		KEY_TIMEOUT,	"NUMBER",	0,	"Time in seconds before booting inactive client (default 10 seconds)"},
+	{"workers",		KEY_WORKERS,	"NUMBER",	0,	"Number of worker processes (default 1 worker)"},
 	{0}
 };
 
