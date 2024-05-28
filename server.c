@@ -18,7 +18,7 @@
 // fprintf, snprintf
 #include <stdio.h>
 
-// malloc, free, on_exit
+// malloc, free, on_exit, exit
 #include <stdlib.h>
 
 // strerror, memchr, memmem, strcpy, strncat, strrchr
@@ -1054,18 +1054,18 @@ static void cleanup(int code, void* arg)
 // *********************************************************************
 // Server setup and loop
 // *********************************************************************
-int doserver(struct server_params* params)
+void server_process(struct server_params* params)
 {
 	// Set up signals
 	if (setupsignals() < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Max out open file descriptor limit
 	if (maxfdlimit() < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Allocate and set up the server state
@@ -1074,7 +1074,7 @@ int doserver(struct server_params* params)
 	if (server == NULL)
 	{
 		fprintf(stderr, "%i - Error: Could not allocate memory for server state: %s\n", getpid(), strerror(errno));
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	server->params = params;
@@ -1096,7 +1096,7 @@ int doserver(struct server_params* params)
 	
 	if (server->directory < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Open signalfd
@@ -1104,7 +1104,7 @@ int doserver(struct server_params* params)
 	
 	if (server->sigfd < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Open timerfd
@@ -1112,7 +1112,7 @@ int doserver(struct server_params* params)
 	
 	if (server->timerfd < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Open socket
@@ -1120,7 +1120,7 @@ int doserver(struct server_params* params)
 	
 	if (server->socket < 0)
 	{
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	// Set up epoll
@@ -1130,7 +1130,7 @@ int doserver(struct server_params* params)
 	if (server->loop == NULL)
 	{
 		fprintf(stderr, "%i - Error: Cannot create event loop!\n", getpid());
-		return -1;
+		exit(EXIT_FAILURE);
 	}
 	
 	sepoll_add(server->loop, server->sigfd, EPOLLIN | EPOLLET, server_signal, server, NULL);
@@ -1144,5 +1144,5 @@ int doserver(struct server_params* params)
 	
 	fprintf(stderr, "%i - Exiting\n", getpid());
 	
-	return 0;
+	exit(EXIT_SUCCESS);
 }

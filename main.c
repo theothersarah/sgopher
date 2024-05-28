@@ -71,7 +71,7 @@ struct arguments
 static struct argp_option argp_options[] =
 {
 	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from. Defaults to ./gopherroot"},
-	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server for generation of gophermaps. Defaults to localhost"},
+	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server, used for generation of gophermaps. Defaults to localhost"},
 	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap"},
 	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process. Defaults to 4096"},
 	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port. Defaults to 70"},
@@ -365,21 +365,17 @@ int main(int argc, char* argv[])
 	{
 		int pidfd;
 		
+		// This custom fork returns both a pid and a pidfd to the parent
 		pid_t pid = sfork(&pidfd);
 	
 		if (pid == 0) // Worker
 		{
+			// No point keeping these around in the worker process
 			free(supervisor->workers);
 			free(supervisor);
 			
-			int retval = doserver(&params);
-			
-			if (retval < 0)
-			{
-				exit(EXIT_FAILURE);
-			}
-			
-			exit(EXIT_SUCCESS);
+			// This does not return
+			server_process(&params);
 		}
 		else if (pid < 0) // Error
 		{
@@ -389,6 +385,7 @@ int main(int argc, char* argv[])
 		{
 			fprintf(stderr, "S - Spawned worker process %u (PID %i)\n", i, pid);
 			
+			// Keep track of the forked worker
 			supervisor->workers[i].number = i;
 			supervisor->workers[i].pid = pid;
 			supervisor->workers[i].pidfd = pidfd;
@@ -408,7 +405,7 @@ int main(int argc, char* argv[])
 	}
 	else if (supervisor->activeWorkers < supervisor->numWorkers)
 	{
-		fprintf(stderr, "S - Could only spawn %i workers instead of the requested %i\n", supervisor->activeWorkers, supervisor->numWorkers);
+		fprintf(stderr, "S - Could only spawn %u workers instead of the requested %u\n", supervisor->activeWorkers, supervisor->numWorkers);
 	}
 	else
 	{
@@ -448,7 +445,10 @@ int main(int argc, char* argv[])
 	
 	for (unsigned int i = 0; i < supervisor->numWorkers; i++)
 	{
-		sepoll_add(supervisor->loop, supervisor->workers[i].pidfd, EPOLLIN, pidfd_event, supervisor, &supervisor->workers[i]);
+		if (supervisor->workers[i].pidfd > -1)
+		{
+			sepoll_add(supervisor->loop, supervisor->workers[i].pidfd, EPOLLIN, pidfd_event, supervisor, &supervisor->workers[i]);
+		}
 	}
 	
 	// Event loop doesn't exit until all children exit

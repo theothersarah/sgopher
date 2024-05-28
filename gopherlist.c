@@ -25,11 +25,15 @@
 
 struct snbuffer
 {
+	// file descriptor to flush the buffer to
 	int fd;
 	
+	// Base and length of buffer
 	char* base;
 	size_t len;
 	
+	// These are the current end position and remaining size of the buffer
+	// They are passed to snprintf and updated by snbuffer_push
 	char* pos;
 	size_t size;
 };
@@ -108,7 +112,7 @@ void snbuffer_push(struct snbuffer* buf, size_t leftover, int size)
 static size_t filenames_count = 0;
 static char** filenames = NULL;
 
-void cleanup()
+static void cleanup()
 {
 	if (filenames != NULL)
 	{
@@ -128,27 +132,35 @@ static int compare_strings(const void* pa, const void* pb)
 }
 
 // Mapping of extension to selector type
+// Not comprehensive but at least an assortment of common and period-accurate stuff
+// This must be pre-sorted according to strcmp rules for bsearch
+// Default for a non-executable, non-directory file is 9 so anything of that type should not be here
+
 struct ext_entry
 {
 	const char* ext;
 	const char type;
 };
 
-// Not comprehensive but at least an assortment of common and period-accurate stuff
-// This must be pre-sorted according to strcmp rules for bsearch
 static const struct ext_entry ext_table[] =
 {
 	{"bmp", 'I'},
 	{"c", '0'},
+	{"cpp", '0'},
 	{"gif", 'g'},
 	{"h", '0'},
+	{"htm", 'h'},
+	{"html", 'h'},
 	{"jpeg", 'I'},
 	{"jpg", 'I'},
+	{"mp3", 's'},
+	{"ogg", 's'},
 	{"pcx", 'I'},
 	{"png", 'I'},
 	{"tif", 'I'},
 	{"tiff", 'I'},
-	{"txt", '0'}
+	{"txt", '0'},
+	{"wav", 's'}
 };
 
 // Comparison function for the file extension list

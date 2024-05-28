@@ -23,9 +23,6 @@
 // strerror, strlen
 #include <string.h>
 
-// mmap, munmap
-#include <sys/mman.h>
-
 // socket, connect
 #include <sys/socket.h>
 
@@ -41,13 +38,16 @@
 // fork, read, close
 #include <unistd.h>
 
+// shared memory allocation functions
+#include "smalloc.h"
+
 // *********************************************************************
 // argp stuff for option parsing
 // *********************************************************************
 
 // argp globals (these must have these names)
 const char* argp_program_version = "gophertester 0.1";
-//const char* argp_program_bug_address = "";
+const char* argp_program_bug_address = "<contact@sarahwatt.ca>";
 
 // argp documentation string
 static char argp_doc[] = "Benchmark tool for Gopher servers";
@@ -56,6 +56,7 @@ static char argp_doc[] = "Benchmark tool for Gopher servers";
 enum arg_keys
 {
 	KEY_ADDRESS = 'a',
+	KEY_BUFFERSIZE = 'b',
 	KEY_DURATION = 'd',
 	KEY_PORT = 'p',
 	KEY_REQUEST = 'r',
@@ -68,11 +69,12 @@ enum arg_keys
 static struct argp_option argp_options[] =
 {
 	{"address",		KEY_ADDRESS,	"STRING",		0,			"Address of Gopher server (default 127.0.0.1)"},
+	{"buffersize",	KEY_BUFFERSIZE,	"NUMBER",		0,			"Size of receiver buffer to use in bytes (default 65536 bytes)"},
 	{"duration",	KEY_DURATION,	"NUMBER",		0,			"Duration of test in seconds (default 60)"},
 	{"port",		KEY_PORT,		"NUMBER",		0,			"Network port to use (default 8080)"},
 	{"request",		KEY_REQUEST,	"STRING",		0,			"Request string without trailing CRLF sequence (default /)"},
-	{"size",		KEY_SIZE,		"NUMBER",		0,			"Expected size of response in bytes (default 0 - do not check size)"},
-	{"timeout",		KEY_TIMEOUT,	"NUMBER",		0,			"Time to wait for socket state change before giving up in milliseconds (default 1000)"},
+	{"size",		KEY_SIZE,		"NUMBER",		0,			"Expected size of response in bytes, or 0 for no size check (default 0 bytes - do not check size)"},
+	{"timeout",		KEY_TIMEOUT,	"NUMBER",		0,			"Time to wait for socket state change before giving up in milliseconds, or a negative number for no timeout (default 1000 milliseconds)"},
 	{"workers",		KEY_WORKERS,	"NUMBER",		0,			"Number of worker processes (default 1)"},
 	{0}
 };
@@ -81,6 +83,7 @@ static struct argp_option argp_options[] =
 struct arguments
 {
 	char* address;
+	unsigned int buffersize;
 	unsigned int duration;
 	unsigned short port;
 	char* request;
@@ -98,6 +101,9 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 	{
 	case KEY_ADDRESS:
 		args->address = arg;
+		break;
+	case KEY_BUFFERSIZE:
+		sscanf(arg, "%u", &args->buffersize);
 		break;
 	case KEY_DURATION:
 		sscanf(arg, "%u", &args->duration);
@@ -125,69 +131,6 @@ static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 }
 
 // *********************************************************************
-// Shared memory allocation functions
-//
-// smalloc asks for a little extra memory so it can prepend a size,
-// which is used by sfree when later being freed. scalloc is a wrapper
-// around smalloc which is for allocating an array.
-// *********************************************************************
-
-void* smalloc(size_t size)
-{
-	if (size == 0)
-	{
-		errno = EINVAL;
-		return NULL;
-	}
-	
-	size_t length = sizeof(size_t) + size;
-
-	size_t* ptr = (size_t*)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
-	if (ptr == MAP_FAILED)
-	{
-		return NULL;
-	}
-
-	*ptr = length;
-	ptr++;
-
-	return (void*)ptr;
-}
-
-void* scalloc(size_t nmemb, size_t size)
-{
-	if (nmemb == 0 || size == 0)
-	{
-		errno = EINVAL;
-		return NULL;
-	}
-	
-	size_t total = nmemb * size;
-	
-	if (total / nmemb != size)
-	{
-		errno = EOVERFLOW;
-		return NULL;
-	}
-	
-	return smalloc(total);
-}
-
-void sfree(void* ptr)
-{
-	if (ptr == NULL)
-	{
-		return;
-	}
-
-	size_t* base = (size_t*)ptr;
-	base--;
-
-	munmap((void*)base, *base);
-}
-
-// *********************************************************************
 // Combined worker information and results
 // *********************************************************************
 
@@ -205,12 +148,12 @@ struct result
 // cleanup functions for on_exit
 // *********************************************************************
 
-void cleanup_smalloc(int code, void* arg)
+static void cleanup_smalloc(int code, void* arg)
 {
 	sfree(arg);
 }
 
-void cleanup_malloc(int code, void* arg)
+static void cleanup_malloc(int code, void* arg)
 {
 	free(arg);
 }
@@ -218,10 +161,10 @@ void cleanup_malloc(int code, void* arg)
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
-void process(unsigned int id, struct result* results, struct arguments* args)
+__attribute__((noreturn)) static void worker_process(unsigned int id, struct result* results, struct arguments* args)
 {
 	// Allocate memory for the receive buffer
-	const size_t buf_len = 1024*1024;
+	const size_t buf_len = args->buffersize;
 	
 	void* buf = malloc(buf_len);
 	
@@ -472,6 +415,7 @@ int main(int argc, char* argv[])
 	// Default argument values
 	struct arguments args;
 	args.address = "127.0.0.1";
+	args.buffersize = 65536;
 	args.duration = 60;
 	args.port = 70;
 	args.request = "/";
@@ -484,12 +428,13 @@ int main(int argc, char* argv[])
 
 	// Report argument values
 	fprintf(stderr, "Address: %s\n", args.address);
+	fprintf(stderr, "Buffer size:: %u bytes\n", args.buffersize);
 	fprintf(stderr, "Port: %hu\n", args.port);
-	fprintf(stderr, "Duration: %i seconds\n", args.duration);
+	fprintf(stderr, "Duration: %u seconds\n", args.duration);
 	fprintf(stderr, "Request: %s\n", args.request);
-	fprintf(stderr, "Expected size: %i\n", args.size);
-	fprintf(stderr, "Timeout: %i milliseconds\n", args.timeout);
-	fprintf(stderr, "Workers: %i\n", args.workers);
+	fprintf(stderr, "Expected size: %u bytes\n", args.size);
+	fprintf(stderr, "Timeout: %u milliseconds\n", args.timeout);
+	fprintf(stderr, "Workers: %u\n", args.workers);
 	
 	// Allocate and initialize shared memory
 	struct result* results = (struct result*)scalloc(args.workers, sizeof(struct result));
@@ -523,7 +468,7 @@ int main(int argc, char* argv[])
 		if (pid == 0) // Worker
 		{
 			// This does not return
-			process(i, results, &args);
+			worker_process(i, results, &args);
 		}
 		else if (pid < 0) // Error
 		{

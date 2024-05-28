@@ -15,4 +15,4 @@ struct server_params
 	const char* indexfile;
 };
 
-int doserver(struct server_params* params);
+__attribute__((noreturn)) void server_process(struct server_params* params);
