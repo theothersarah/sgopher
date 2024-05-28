@@ -23,7 +23,7 @@
 // Core definitions
 // *********************************************************************
 
-struct sepoll_callback
+struct sepoll_callback_t
 {
 	// Associated file descriptor, used as the key for tree searching
 	int fd;
@@ -35,10 +35,10 @@ struct sepoll_callback
 	void* userdata2;
 	
 	// Can also be added to a list while awaiting garbage collection
-	LIST_ENTRY(sepoll_callback) entry;
+	LIST_ENTRY(sepoll_callback_t) entry;
 };
 
-LIST_HEAD(callback_list, sepoll_callback);
+LIST_HEAD(sepoll_callback_list_t, sepoll_callback_t);
 
 struct sepoll_t
 {
@@ -46,7 +46,7 @@ struct sepoll_t
 	void* callbacks_tree;
 	
 	// List for garbage collection since order is not important for that
-	struct callback_list callbacks_gc_list;
+	struct sepoll_callback_list_t callbacks_gc_list;
 	
 	// epoll stuff
 	struct epoll_event* epoll_events;
@@ -63,8 +63,8 @@ struct sepoll_t
 
 static int compare_callback_fd(const void* pa, const void* pb)
 {
-	const struct sepoll_callback* a = pa;
-	const struct sepoll_callback* b = pb;
+	const struct sepoll_callback_t* a = pa;
+	const struct sepoll_callback_t* b = pb;
 	
 	if (a->fd < b->fd)
 	{
@@ -80,14 +80,14 @@ static int compare_callback_fd(const void* pa, const void* pb)
 	}
 }
 
-static struct sepoll_callback* sepoll_find_fd(struct sepoll_t* loop, int fd)
+static struct sepoll_callback_t* sepoll_find_fd(struct sepoll_t* loop, int fd)
 {
-	struct sepoll_callback searchfd =
+	struct sepoll_callback_t searchfd =
 	{
 		.fd = fd
 	};
 	
-	struct sepoll_callback** found = tfind(&searchfd, &loop->callbacks_tree, compare_callback_fd);
+	struct sepoll_callback_t** found = tfind(&searchfd, &loop->callbacks_tree, compare_callback_fd);
 	
 	if (found == NULL)
 	{
@@ -187,11 +187,11 @@ void sepoll_destroy(struct sepoll_t* loop)
 		tdestroy(loop->callbacks_tree, free);
 	}
 	
-	struct sepoll_callback* callback = LIST_FIRST(&loop->callbacks_gc_list);
+	struct sepoll_callback_t* callback = LIST_FIRST(&loop->callbacks_gc_list);
 	
 	while (callback != NULL)
 	{
-		struct sepoll_callback* next = LIST_NEXT(callback, entry);
+		struct sepoll_callback_t* next = LIST_NEXT(callback, entry);
 	
 		free(callback);
 		
@@ -212,7 +212,7 @@ void sepoll_destroy(struct sepoll_t* loop)
 int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
 	// Allocate memory for the callback and initialize it
-	struct sepoll_callback* callback = malloc(sizeof(struct sepoll_callback));
+	struct sepoll_callback_t* callback = malloc(sizeof(struct sepoll_callback_t));
 	
 	if (callback == NULL)
 	{
@@ -226,7 +226,7 @@ int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*functi
 	
 	// Attempt to add it to the tree
 	// If it can't be added or something with this file descriptor already exists on it, fail
-	struct sepoll_callback** entry = tsearch(callback, &loop->callbacks_tree, compare_callback_fd);
+	struct sepoll_callback_t** entry = tsearch(callback, &loop->callbacks_tree, compare_callback_fd);
 	
 	if (entry == NULL || *entry != callback)
 	{
@@ -253,7 +253,7 @@ int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*functi
 
 int sepoll_mod(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
-	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
+	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
 	if (callback == NULL)
 	{
@@ -280,7 +280,7 @@ int sepoll_mod(struct sepoll_t* loop, int fd, unsigned int events, void (*functi
 
 int sepoll_mod_events(struct sepoll_t* loop, int fd, unsigned int events)
 {
-	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
+	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
 	if (callback == NULL)
 	{
@@ -298,7 +298,7 @@ int sepoll_mod_events(struct sepoll_t* loop, int fd, unsigned int events)
 
 int sepoll_mod_userdata(struct sepoll_t* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
 {
-	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
+	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
 	if (callback == NULL)
 	{
@@ -315,7 +315,7 @@ int sepoll_mod_userdata(struct sepoll_t* loop, int fd, void (*function)(int, uns
 int sepoll_remove(struct sepoll_t* loop, int fd)
 {
 	// Get the event data associated with the file descriptor
-	struct sepoll_callback* callback = sepoll_find_fd(loop, fd);
+	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
 	if (callback == NULL)
 	{
@@ -350,7 +350,7 @@ static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 	// Iterate over returned events and call the callback functions
 	for (int i = 0; i < n; i++)
 	{
-		struct sepoll_callback* callback = loop->epoll_events[i].data.ptr;
+		struct sepoll_callback_t* callback = loop->epoll_events[i].data.ptr;
 		
 		if (callback->function != NULL)
 		{
@@ -359,11 +359,11 @@ static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 	}
 	
 	// Iterate through the garbage collection list and free everything in it
-	struct sepoll_callback* callback = LIST_FIRST(&loop->callbacks_gc_list);
+	struct sepoll_callback_t* callback = LIST_FIRST(&loop->callbacks_gc_list);
 	
 	while (callback != NULL)
 	{
-		struct sepoll_callback* next = LIST_NEXT(callback, entry);
+		struct sepoll_callback_t* next = LIST_NEXT(callback, entry);
 		
 		LIST_REMOVE(callback, entry);
 		
