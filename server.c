@@ -1,4 +1,4 @@
-// For non-standard things
+// For some especially non-standard things: memmem, accept4, O_PATH
 #define _GNU_SOURCE
 
 // All the internet shit
@@ -21,7 +21,7 @@
 // malloc, free, on_exit, exit
 #include <stdlib.h>
 
-// strerror, memchr, memmem, strcpy, strncat, strrchr
+// strerror, memchr, memmem, memrchr, stpcpy, mempcpy
 #include <string.h>
 
 // pidfd_send_signal
@@ -57,17 +57,30 @@
 // read, write, close, getpid, dup2, dup, fexecve, fchdir
 #include <unistd.h>
 
-// My stuff
-#include "sfork.h"
+// event loop fumctions
 #include "sepoll.h"
+
+// server entry function and parameters
 #include "server.h"
+
+// sfork
+#include "sfork.h"
 
 // *********************************************************************
 // Constants
 // *********************************************************************
 
-// Twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF
+// Maximum incoming request size
+// Equal to twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF
 #define MAX_REQUEST_SIZE 2*255 + 2
+
+// Maximum filename size for a request that has been processed into a null-terminated relative path
+// -2 because CRLF is cut off and +3 to add ./ to the start and null to the end
+#define MAX_FILENAME_SIZE MAX_REQUEST_SIZE - 2 + 3
+
+// Size of buffers for CGI environment variables
+// Arbitrary but generous, and if it's exceeded the string is truncated safely
+#define ENV_BUFFER_SIZE 1024
 
 // Error messages formatted as gopher menus
 #define ERROR_BAD "3400 Bad Request\r\n.\r\n"
@@ -242,10 +255,11 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		char* query;
 		size_t querySize;
 		
-		// Buffer for filename (size -2 because CRLF is cut off and +3 to add ./ to the start and null to the end)
-		char filename[MAX_REQUEST_SIZE - 2 + 3];
+		// Buffer for filename
+		char filename[MAX_FILENAME_SIZE];
+		size_t filenameSize;
 		
-		// Search for a tab which indicates the request contains a query
+		// Search for a tab which indicates that the request contains a query
 		char* tab = memchr(client->buffer, '\t', client->count);
 		
 		// Figure out the length of the provided selector and the query
@@ -273,9 +287,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Figure out the filename from the selector
 		if (selectorSize == 0)
 		{
-			selector = NULL;
+			// Assume the client actually sent a request of /
+			selector = "/";
+			selectorSize = 1;
 			
-			strcpy(filename, "./");
+			// Set up the filename
+			stpcpy(filename, "./");
+			filenameSize = 2;
 		}
 		else
 		{
@@ -304,10 +322,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			}
 			while (str_curr++ != NULL);
 			
-			// Ensure that the path is relative to the document root
+			// Form a relative path from the provided selector
 			// It's okay if it already starts with a / because consecutive slashes are ignored
-			strcpy(filename, "./");
-			strncat(filename, selector, selectorSize);
+			char* str_end = stpcpy(filename, "./");
+			str_end = mempcpy(str_end, selector, selectorSize);
+			*str_end = '\0';
+			
+			filenameSize = selectorSize + 2;
 		}
 		
 		// Try to open the requested file
@@ -405,12 +426,12 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (client->dirfd < 0)
 				{
 					// It shouldn't be possible for it to not find a slash in the filename given that we added one
-					char* slash = strrchr(filename, '/');
+					char* slash = memrchr(filename, '/', filenameSize);
 					
 					// Extract everything up to the last slash as a string
-					char path[1024];
-					path[0] = '\0';
-					strncat(path, filename, (size_t)(slash - filename));
+					char path[MAX_FILENAME_SIZE];
+					char* str_end = mempcpy(path, filename, (size_t)(slash - filename));
+					*str_end = '\0';
 					
 					// Try to open the path
 					client->dirfd = openat(server->directory, path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
@@ -449,26 +470,25 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				// Command line arguments
 				char* argv[] =
 				{
-					"cgi worker",
+					"sgopher cgi process",
 					NULL
 				};
 				
 				// Environment variables
-				// 1024 bytes should be more than generous and exceeding it will just cut it off
-				char env_selector[1024];
-				snprintf(env_selector, 1024, "SCRIPT_NAME=%.*s", (int)selectorSize, selector);
+				char env_selector[ENV_BUFFER_SIZE];
+				snprintf(env_selector, ENV_BUFFER_SIZE, "SCRIPT_NAME=%.*s", (int)selectorSize, selector);
 				
-				char env_query[1024];
-				snprintf(env_query, 1024, "QUERY_STRING=%.*s", (int)querySize, query);
+				char env_query[ENV_BUFFER_SIZE];
+				snprintf(env_query, ENV_BUFFER_SIZE, "QUERY_STRING=%.*s", (int)querySize, query);
 				
-				char env_hostname[1024];
-				snprintf(env_hostname, 1024, "SERVER_NAME=%s", server->params->hostname);
+				char env_hostname[ENV_BUFFER_SIZE];
+				snprintf(env_hostname, ENV_BUFFER_SIZE, "SERVER_NAME=%s", server->params->hostname);
 				
-				char env_port[1024];
-				snprintf(env_port, 1024, "SERVER_PORT=%hu", server->params->port);
+				char env_port[ENV_BUFFER_SIZE];
+				snprintf(env_port, ENV_BUFFER_SIZE, "SERVER_PORT=%hu", server->params->port);
 				
-				char env_address[1024];
-				snprintf(env_address, 1024, "REMOTE_ADDR=%s", client->address);
+				char env_address[ENV_BUFFER_SIZE];
+				snprintf(env_address, ENV_BUFFER_SIZE, "REMOTE_ADDR=%s", client->address);
 				
 				char* envp[] =
 				{
@@ -982,9 +1002,9 @@ static int open_timerfd(time_t interval)
 }
 
 // *********************************************************************
-// Server cleanup
+// Server cleanup function for on_exit
 // *********************************************************************
-static void cleanup(int code, void* arg)
+static void server_cleanup(int code, void* arg)
 {
 	struct server_t* server = arg;
 	
@@ -1090,7 +1110,7 @@ void server_process(struct server_params_t* params)
 	
 	server->loop = NULL;
 	
-	on_exit(cleanup, server);
+	on_exit(server_cleanup, server);
 	
 	// Open content directory
 	server->directory = open_dir(params->directory);

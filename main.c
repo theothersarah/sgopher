@@ -34,10 +34,14 @@
 // close, read, dup2
 #include <unistd.h>
 
-// My stuff
-#include "sfork.h"
+// event loop fumctions
 #include "sepoll.h"
+
+// server entry function and parameters
 #include "server.h"
+
+// sfork
+#include "sfork.h"
 
 // *********************************************************************
 // Command line arguments
@@ -236,9 +240,9 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 }
 
 // *********************************************************************
-// Supervisor cleanup
+// Supervisor cleanup function for on_exit
 // *********************************************************************
-static void cleanup(int code, void* arg)
+static void supervisor_cleanup(int code, void* arg)
 {
 	struct supervisor_t* supervisor = arg;
 	
@@ -299,7 +303,7 @@ int main(int argc, char* argv[])
 	fprintf(stderr, "S - Spawning %u workers\n", args.numWorkers);
 	
 	// Copy arguments to server parameters
-	// Why do it like this? Just in case they are parsed from a configuration file in the future instead of the command line
+	// In the future these could potentially also come from config files
 	struct server_params_t params =
 	{
 		.hostname = args.hostname,
@@ -399,7 +403,7 @@ int main(int argc, char* argv[])
 	}
 	
 	// Supervisor task begins here
-	on_exit(cleanup, supervisor);
+	on_exit(supervisor_cleanup, supervisor);
 	
 	// Check number of workers that were successfully spawned
 	if (supervisor->activeWorkers == 0)
