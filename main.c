@@ -34,7 +34,7 @@
 // close, read, dup2
 #include <unistd.h>
 
-// event loop fumctions
+// event loop functions
 #include "sepoll.h"
 
 // server entry function and parameters

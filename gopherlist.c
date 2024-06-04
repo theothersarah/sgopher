@@ -1,3 +1,6 @@
+// for memrchr, strcasestr
+#define _GNU_SOURCE
+
 // opendir, readdir, closedir
 #include <dirent.h>
 
@@ -10,7 +13,7 @@
 // atexit, getenv, malloc, calloc, reallocarray, free, qsort, bsearch
 #include <stdlib.h>
 
-// strerror, strcpy, strchr, strlen, strncat, strcat, strrchr, strcmp
+// strerror, strcpy, strlen, strrchr, strcmp, memrchr, strcasestr
 #include <string.h>
 
 // stat
@@ -178,53 +181,11 @@ int main()
 	atexit(cleanup);
 	
 	// Get the environment variables we need
-	// It's fine if they are null, too, even if it would generate a non-functional menu
+	// It's fine if they are null, too, although it would generate a non-functional menu
 	char* env_selector = getenv("SCRIPT_NAME");
 	char* env_hostname = getenv("SERVER_NAME");
 	char* env_port = getenv("SERVER_PORT");
-	
-	// Trim extra slashes out of the selector. Multiple slashes in a row are valid so this is mostly cosmetic.
-	// Also makes sure the selector has a slash at the beginning and end which are also not strictly necessary,
-	// but play nice with adding the hostname and filename to the front and end respectively.
-	// Also makes it easier to generate the selector for the "up a level" link.
-	// The passed selector from sgopher should not exceed 510 bytes so extra room is allocated and no length
-	// checking should be necessary
-	char selector[1024];
-	strcpy(selector, "/");
-	
-	int n = 0;
-	
-	// Should only inspect the string if it is not null and has a non-zero length
-	if (env_selector != NULL && env_selector[0] != '\0')
-	{
-		char* str_curr = env_selector;
-		
-		do
-		{
-			char* slash = strchr(str_curr, '/');
-			
-			size_t str_size;
-			
-			if (slash == NULL)
-			{
-				str_size = strlen(str_curr);
-			}
-			else
-			{
-				str_size = (size_t)(slash - str_curr);
-			}
-			
-			if (str_size > 0)
-			{
-				n++;
-				strncat(selector, str_curr, str_size);
-				strcat(selector, "/");
-			}
-			
-			str_curr = slash;
-		}
-		while (str_curr++ != NULL);
-	}
+	char* env_query = getenv("QUERY_STRING");
 	
 	// Allocate the list of filenames with a starter size that may be increased later
 	size_t filenames_size = 256;
@@ -262,6 +223,7 @@ int main()
 		if (filename == NULL)
 		{
 			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
+			closedir(directory);
 			exit(EXIT_FAILURE);
 		}
 		
@@ -282,6 +244,7 @@ int main()
 			if (filenames == NULL)
 			{
 				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
+				closedir(directory);
 				exit(EXIT_FAILURE);
 			}
 		}
@@ -299,27 +262,68 @@ int main()
 	
 	snbuffer_setup(&snbuffer, STDOUT_FILENO, buffer, BUFFER_LENGTH);
 	
-	// Build header, which includes a "parent directory" link if the selector indicated a subdirectory
-	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of %s%s\r\n", env_hostname, selector));
+	// Figure out where the final slash is, assuming it denotes what the containing directory is
+	char* last_slash = NULL;
 	
-	if (n > 0)
+	if (env_selector != NULL)
 	{
-		char* slash = selector;
-		
-		for (int i = 0; i < n; i++)
-		{
-			slash = strchr(slash, '/') + 1;
-		}
-		
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(slash - selector), selector, env_hostname, env_port));
+		last_slash = strrchr(env_selector, '/');
+	}
+	
+	// Find out where the second last slash is, assuming it denotes what the parent directory is
+	char* parent_slash = NULL;
+	
+	if (last_slash != NULL)
+	{
+		parent_slash = memrchr(env_selector, '/', (size_t)(last_slash - env_selector));
+	}
+	else
+	{
+		// So that last_slash - env_selector = 0
+		last_slash = env_selector;
+	}
+	
+	// For filename searching
+	unsigned int files_found = 0;
+	size_t query_len = 0;
+	
+	if (env_query != NULL)
+	{
+		query_len = strlen(env_query);
+	}
+	
+	// Build header, which includes a "parent directory" link if one can be derived from the selector
+	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of gopher://%s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector));
+	
+	if (parent_slash != NULL)
+	{
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector), env_selector, env_hostname, env_port));
 	}
 	
 	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\n"));
+	
+	if (query_len > 0)
+	{
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iShowing filenames containing %s\r\n", env_query));
+	}
 	
 	// Build list of filenames
 	for (size_t i = 0; i < filenames_count; i++)
 	{
 		char* filename = filenames[i];
+		
+		// Check filename for query string, case-insensitive
+		if (query_len > 0)
+		{
+			char* found = strcasestr(filename, env_query);
+			
+			if (found == NULL)
+			{
+				continue;
+			}
+			
+			files_found++;
+		}
 		
 		// Get the file stats
 		struct stat statbuf;
@@ -384,14 +388,20 @@ int main()
 		}
 		else
 		{
+			// Skip other types of files
 			continue;
 		}
 		
 		// Build the menu line
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "%c%s\t%s%s\t%s\t%s\r\n", type, filename, selector, filename, env_hostname, env_port));
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "%c%s\t%.*s/%s\t%s\t%s\r\n", type, filename, (int)(last_slash - env_selector), env_selector, filename, env_hostname, env_port));
 	}
 	
 	// Add the footer and output the buffer
+	if (query_len > 0)
+	{
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iFound %u files\r\n", files_found));
+	}
+
 	snbuffer_push(&snbuffer, 0, snprintf(snbuffer.pos, snbuffer.size, ".\r\n"));
 	
 	snbuffer_flush(&snbuffer);

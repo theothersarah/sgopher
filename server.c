@@ -1,4 +1,4 @@
-// For some especially non-standard things: memmem, accept4, O_PATH
+// For some especially non-standard things: memmem, mempcpy, accept4, O_PATH
 #define _GNU_SOURCE
 
 // All the internet shit
@@ -21,7 +21,7 @@
 // malloc, free, on_exit, exit
 #include <stdlib.h>
 
-// strerror, memchr, memmem, memrchr, stpcpy, mempcpy
+// strerror, memchr, memmem, stpcpy, mempcpy, strrchr
 #include <string.h>
 
 // pidfd_send_signal
@@ -57,7 +57,7 @@
 // read, write, close, getpid, dup2, dup, fexecve, fchdir
 #include <unistd.h>
 
-// event loop fumctions
+// event loop functions
 #include "sepoll.h"
 
 // server entry function and parameters
@@ -167,13 +167,18 @@ static void client_disconnect(struct server_t* server, struct client_t* client)
 }
 
 // *********************************************************************
-// Send a kill signal to a pidfd
+// Send a kill signal to a pidfd and disconnect the client if it fails
 // *********************************************************************
-static inline void pidfd_kill(int pidfd)
+static inline void pidfd_kill_client(struct server_t* server, struct client_t* client)
 {
-	if (pidfd_send_signal(pidfd, SIGKILL, NULL, 0) < 0)
+	if (pidfd_send_signal(client->pidfd, SIGKILL, NULL, 0) < 0)
 	{
 		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %s\n", getpid(), strerror(errno));
+		
+		close(client->pidfd);
+		client->pidfd = -1;
+		
+		client_disconnect(server, client);
 	}
 }
 
@@ -203,7 +208,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 	
 	if (events & EPOLLIN)
 	{
-		// Read until buffer is full or read would block
+		// Read socket into client's buffer until it is full or the read would block
 		do
 		{
 			ssize_t count = read(fd, client->buffer + client->count, MAX_REQUEST_SIZE - client->count);
@@ -249,15 +254,11 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		}
 		
 		// Selector and query position and size within the client buffer
-		char* selector;
+		// Selector will be at the beginning so it doesn't need a pointer
 		size_t selectorSize;
 		
 		char* query;
 		size_t querySize;
-		
-		// Buffer for filename
-		char filename[MAX_FILENAME_SIZE];
-		size_t filenameSize;
 		
 		// Search for a tab which indicates that the request contains a query
 		char* tab = memchr(client->buffer, '\t', client->count);
@@ -284,51 +285,52 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			query = NULL;
 		}
 		
-		// Figure out the filename from the selector
-		if (selectorSize == 0)
+		// Buffer for processed filename and pointer to last slash within it for determination of pathname and basename
+		char filename[MAX_FILENAME_SIZE];
+		
+		char* filename_end = stpcpy(filename, ".");
+		
+		// Inspect provided path for leading periods to prevent use of relative paths and access to hidden files
+		// While we're at it, let's remove redundant and trailing slashes as we copy it to the buffer
+		if (selectorSize > 0)
 		{
-			// Assume the client actually sent a request of /
-			selector = "/";
-			selectorSize = 1;
-			
-			// Set up the filename
-			stpcpy(filename, "./");
-			filenameSize = 2;
-		}
-		else
-		{
-			selector = client->buffer;
-			
-			// Inspect provided path for leading periods to prevent use of relative paths and access to hidden files
-			char* str_curr = client->buffer;
+			char* str_pos = client->buffer;
 			
 			do
 			{
-				size_t str_size = (size_t)(client->buffer + selectorSize - str_curr);
+				size_t str_len = selectorSize - (size_t)(str_pos - client->buffer);
 				
-				if (str_size == 0)
+				char* str_slash = memchr(str_pos, '/', str_len);
+				
+				size_t substr_len;
+				
+				if (str_slash == NULL)
 				{
-					break;
+					substr_len = str_len;
+				}
+				else
+				{
+					substr_len = (size_t)(str_slash - str_pos);
 				}
 				
-				if (*str_curr == '.')
+				if (substr_len > 0)
 				{
-					write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
-					client_disconnect(server, client);
-					return;
+					if (*str_pos == '.')
+					{
+						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+						client_disconnect(server, client);
+						return;
+					}
+					
+					filename_end = stpcpy(filename_end, "/");
+					filename_end = mempcpy(filename_end, str_pos, substr_len);
 				}
 				
-				str_curr = memchr(str_curr, '/', str_size);
+				str_pos = str_slash;
 			}
-			while (str_curr++ != NULL);
+			while (str_pos++ != NULL);
 			
-			// Form a relative path from the provided selector
-			// It's okay if it already starts with a / because consecutive slashes are ignored
-			char* str_end = stpcpy(filename, "./");
-			str_end = mempcpy(str_end, selector, selectorSize);
-			*str_end = '\0';
-			
-			filenameSize = selectorSize + 2;
+			*filename_end = '\0';
 		}
 		
 		// Try to open the requested file
@@ -373,7 +375,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			client->dirfd = client->file;
 			
 			// Try to open an index file in the directory
-			client->file = openat(client->file, server->params->indexfile, O_RDONLY | O_CLOEXEC);
+			client->file = openat(client->dirfd, server->params->indexfile, O_RDONLY | O_CLOEXEC);
 			
 			if (client->file < 0)
 			{
@@ -398,6 +400,9 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				client_disconnect(server, client);
 				return;
 			}
+			
+			// For the benefit of CGI programs, add a / to the end of the filename to indicate it was a directory
+			filename_end = stpcpy(filename_end, "/");
 		}
 		else
 		{
@@ -414,31 +419,34 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			if (pid == 0)
 			{
-				// Replace the fork's stdout FD with the socket FD
-				if (dup2(fd, STDOUT_FILENO) < 0)
-				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket FD over stdout: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
-					exit(EXIT_FAILURE);
-				}
+				char* command;
 				
 				// If we don't already have a file descriptor for the containing directory, we need to figure one out from the filename
 				if (client->dirfd < 0)
 				{
-					// It shouldn't be possible for it to not find a slash in the filename given that we added one
-					char* slash = memrchr(filename, '/', filenameSize);
+					// Buffer for pathname
+					char pathname[MAX_FILENAME_SIZE];
 					
-					// Extract everything up to the last slash as a string
-					char path[MAX_FILENAME_SIZE];
-					char* str_end = mempcpy(path, filename, (size_t)(slash - filename));
+					// The filename should always contain a slash, but just in case...
+					char* filename_slash = strrchr(filename, '/');
+					
+					if (filename_slash == NULL)
+					{
+						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash is filename %s\n", getpid(), filename);
+						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						exit(EXIT_FAILURE);
+					}
+					
+					// Extract everything up to the last slash as a string and make it into a null-terminated string
+					char* str_end = mempcpy(pathname, filename, (size_t)(filename_slash - filename));
 					*str_end = '\0';
 					
 					// Try to open the path
-					client->dirfd = openat(server->directory, path, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
+					client->dirfd = openat(server->directory, pathname, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 					
 					if (client->dirfd < 0)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot open executable file directory: %s\n", getpid(), strerror(errno));
+						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %s\n", getpid(), pathname, strerror(errno));
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 						exit(EXIT_FAILURE);
 					}
@@ -446,7 +454,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// Try to get stats of the directory
 					if (fstat(client->dirfd, &statbuf) < 0)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+						fprintf(stderr, "%i (CGI process) - Error: Cannot fstat %s: %s\n", getpid(), pathname, strerror(errno));
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 						exit(EXIT_FAILURE);
 					}
@@ -457,26 +465,34 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
 						exit(EXIT_FAILURE);
 					}
+					
+					// Command is whatever is after the slash
+					command = filename_slash + 1;
+				}
+				else
+				{
+					// Since we opened a directory to get here, that means we have opened a default file
+					command = (char*)server->params->indexfile;
 				}
 				
 				// Change working directory to the location of the executable file
 				if (fchdir(client->dirfd) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir to executable file directory: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %s\n", getpid(), strerror(errno));
 					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 					exit(EXIT_FAILURE);
 				}
 				
 				// Command line arguments
-				char* argv[] =
+				char* const argv[] =
 				{
-					"sgopher cgi process",
+					command,
 					NULL
 				};
 				
 				// Environment variables
 				char env_selector[ENV_BUFFER_SIZE];
-				snprintf(env_selector, ENV_BUFFER_SIZE, "SCRIPT_NAME=%.*s", (int)selectorSize, selector);
+				snprintf(env_selector, ENV_BUFFER_SIZE, "SCRIPT_NAME=%s", filename + 1);
 				
 				char env_query[ENV_BUFFER_SIZE];
 				snprintf(env_query, ENV_BUFFER_SIZE, "QUERY_STRING=%.*s", (int)querySize, query);
@@ -499,6 +515,14 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					env_address,
 					NULL
 				};
+				
+				// Replace the fork's stdout FD with the socket FD
+				if (dup2(fd, STDOUT_FILENO) < 0)
+				{
+					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
+					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					exit(EXIT_FAILURE);
+				}
 				
 				// dup makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
 				fexecve(dup(client->file), argv, envp);
@@ -591,7 +615,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 	{
 		if (client->pidfd >= 0)
 		{
-			pidfd_kill(client->pidfd);
+			pidfd_kill_client(server, client);
 		}
 		else
 		{
@@ -739,34 +763,38 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 	{
 		struct client_t* next = LIST_NEXT(client, entry);
 		
-		if (client->pidfd >= 0)
+		if (currentTime - client->timestamp >= server->params->timeout)
 		{
-			// We don't have timestamps for CGI process interactions so we need to spy on the TCP connection information
-			struct tcp_info tcp_info;
-			socklen_t tcp_info_length = sizeof(struct tcp_info);
-			
-			int retval = getsockopt(client->socket, SOL_TCP, TCP_INFO, &tcp_info, &tcp_info_length);
-			
-			if (retval < 0)
+			if (client->pidfd >= 0)
 			{
-				fprintf(stderr, "%i - Error: Cannot get TCP information from socket: %s\n", getpid(), strerror(errno));
+				// The timestamp refers to when the CGI process was spawned,
+				// so we need to spy on the TCP connection information to find out if it's really idle
+				struct tcp_info tcp_info;
+				socklen_t tcp_info_length = sizeof(struct tcp_info);
+				
+				int retval = getsockopt(client->socket, SOL_TCP, TCP_INFO, &tcp_info, &tcp_info_length);
+				
+				if (retval < 0)
+				{
+					fprintf(stderr, "%i - Error: Cannot get TCP information from socket: %s\n", getpid(), strerror(errno));
+				}
+				
+				// Kill the child process if it hasn't used the socket for at least one timeout period
+				if (retval < 0 || tcp_info.tcpi_last_data_sent >= server->params->timeout * 1000)
+				{
+					pidfd_kill_client(server, client);
+				}
 			}
-			
-			// Kill the child process if it hasn't used the socket for at least one timeout period
-			if (retval < 0 || tcp_info.tcpi_last_data_sent >= server->params->timeout * 1000)
+			else
 			{
-				pidfd_kill(client->pidfd);
+				// Send timeout error if nothing has been sent yet
+				if (client->sentsize == 0)
+				{
+					write(client->socket, ERROR_TIMEOUT, sizeof(ERROR_TIMEOUT) - 1);
+				}
+				
+				client_disconnect(server, client);
 			}
-		}
-		else if (currentTime - client->timestamp >= server->params->timeout)
-		{
-			// Send timeout error if nothing has been sent yet
-			if (client->sentsize == 0)
-			{
-				write(client->socket, ERROR_TIMEOUT, sizeof(ERROR_TIMEOUT) - 1);
-			}
-			
-			client_disconnect(server, client);
 		}
 		
 		client = next;
@@ -1024,7 +1052,7 @@ static void server_cleanup(int code, void* arg)
 		// Kill CGI process, if any
 		if (client->pidfd >= 0)
 		{
-			pidfd_kill(client->pidfd);
+			pidfd_send_signal(client->pidfd, SIGKILL, NULL, 0);
 			close(client->pidfd);
 		}
 		

@@ -6,13 +6,13 @@ sgopher is my personal attempt at a Gopher protocol server that is capable of a 
 ## Configuration
 sgopher is configured entirely with command line options. It accepts the following options:
 
--d, --directory=STRING     Location to serve files from. Defaults to ./gopherroot  
--h, --hostname=STRING      Externally-accessible hostname of server for generation of gophermaps. Defaults to localhost  
--i, --indexfile=STRING     Default file to serve from a blank path or path referencing a directory. Defaults to .gophermap  
--m, --maxclients=NUMBER    Maximum simultaneous clients per worker process. Defaults to 4096  
--p, --port=NUMBER          Network port. Defaults to 70  
--t, --timeout=NUMBER       Time in seconds before booting inactive client. Defaults to 10  
--w, --workers=NUMBER       Number of worker processes. Defaults to 1
+-d, --directory=STRING     Location to serve files from (default ./gopherroot)  
+-h, --hostname=STRING      Externally-accessible hostname of server, used for generation of gophermaps (default localhost)  
+-i, --indexfile=STRING     Default file to serve from a blank path or path referencing a directory (default .gophermap)  
+-m, --maxclients=NUMBER    Maximum simultaneous clients per worker process (default 4096 clients)  
+-p, --port=NUMBER          Network port (default port 70)  
+-t, --timeout=NUMBER       Time in seconds before booting inactive client (default 10 seconds)  
+-w, --workers=NUMBER       Number of worker processes (default 1 worker)
 
 sgopher must be run as a user with permission to bind a socket to ports below 1024, or else a custom high port number must be used. It currently contains no provisions for access logging or throttling. Errors are reported via stderr.
 
@@ -40,9 +40,9 @@ Additionally, there will be an open file descriptor referring to the executable 
 
 The following environmental variables are provided, mimicking some aspects of the CGI standard:
 
-SCRIPT_NAME - the selector that was provided and resulted in the execution of this file.  
+SCRIPT_NAME - the selector that was provided and resulted in the execution of this file. It will be processed to include a / at the start, a / at the end if the selector referred to a directory, and with all redundant slashes removed.  
 QUERY_STRING - if the selector string included a query separated from the selector string by a tab, as per Gopher's menu type 7, it will be present in this variable.  
-SERVER_NAME - hostname of the server as provided via a command line option.  
+SERVER_NAME - hostname of the server as provided via the command line option.  
 SERVER_PORT - port of the server.  
 REMOTE_ADDR - client's address.
 
@@ -55,28 +55,31 @@ This benchmark tool hammers a Gopher server as fast as it can, using one concurr
 
 It takes the following command line options:
 
--a, --address=STRING       Address of echo server (default 127.0.0.1)  
--d, --duration=NUMBER      Duration of test in seconds (default 60)  
--p, --port=NUMBER          Network port to use (default 8080)  
--r, --request=STRING       Request string (default /)  
--s, --size=NUMBER          Expected size of response in bytes (default 0 - do not check size)  
--t, --timeout=NUMBER       Time to wait for socket state change before giving up in milliseconds (default 1000)  
--w, --workers=NUMBER       Number of worker processes (default 1)
+-a, --address=STRING       Address of Gopher server (default 127.0.0.1)  
+-b, --buffersize=NUMBER    Size of receive buffer to use in bytes (default 65536 bytes)  
+-d, --duration=NUMBER      Duration of test in seconds (default 60 seconds)  
+-p, --port=NUMBER          Network port to use (default port 70)  
+-r, --request=STRING       Request string without trailing CRLF sequence (default /)  
+-s, --size=NUMBER          Expected size of response in bytes, or 0 for no size check (default 0 bytes - do not check size)  
+-t, --timeout=NUMBER       Time to wait for socket state change before giving up in milliseconds, or a negative number for no timeout (default 1000 milliseconds)  
+-w, --workers=NUMBER       Number of worker processes (default 1 worker)
 
 Note that it automatically appends CRLF to the request string, so you do not need to include that in the string passed to the --request option. For best results, use a large number of workers to maximize concurrent requests.
 
-(Please, for the love of God, only use this on your own servers!)
+(Please, for the love of God, only use this on your own servers! By design, it has no throttling and will easily saturate gigabit ethernet on my modest test setup.)
 
 ## gopherlist
-gopherlist is intended to be executed by the server itself to produce a directory listing, rather than building that functionality into the server itself. To use, make a symlink to it from any directory in which a listing is desired. Give the symlink the same name as the gophermap file (default .gophermap).
+gopherlist is intended to be executed by the server itself to produce a directory listing, rather than building that functionality into the server itself. For typical usage, make a symlink to it from any directory in which a listing is desired. Give the symlink the same name as the gophermap file (default .gophermap).
 
 It should look something like this in a directory listing, and gopherlist itself should be executable:
 
 lrwxrwxrwx 1 sarah sarah   16 May  6 06:49 .gophermap -> ../../gopherlist
 
-When the directory is accessed by a user, a gophermap presenting a file listing will be generated and presented to the client. Files will only be listed if they meet the requirements to be served: the filename must not start with a period, it must be world-readable, and if it is a directory it must also be world-executable. A parent directory link will be generated if applicable. The server's externally-accessible hostname must be set correctly with the --hostname option or the links will not work correctly.
+When the directory is accessed by a user, a gophermap presenting a file listing will be generated and presented to the client. Files will only be listed if they meet the requirements to be served: the filename must not start with a period, it must be world-readable, and if it is a directory it must also be world-executable. A parent directory link will be generated if applicable based on the selector. Files will be assigned a menu type based on if they are executable files (menu type 7), directories (menu type 1), or otherwise, a variety of possibilities based on the file extension. The server's externally-accessible hostname must be set correctly with the --hostname option or the links will not work correctly.
 
-Note that gopherlist uses a simplistic method of generating menu selectors that is only valid if the selector sent to it had originally referred to the containing directory. Essentially, a selector of /directory works, but /directory/gopherlist will not work because the menu selectors will be generated as /directory/gopherlist/file which will not work since gopherlist is not a directory. This is fine with the default .gophermap name, because files starting with periods cannot be accessed directly, but be aware if you use a different name for your gophermaps.
+gopherlist does not necessarily need to be the gophermap of a directory. Based on the position of the final slash in the selector, it will determine if it was invoked by name or by directory and generate the listing accordingly. In this case, it will list itself with menu type 7 among the files in the directory.
+
+If invoked with a query string, it will display only those files with names that contain the provided query as a substring.
 
 ## sgopher Technical Ramblings
 sgopher makes use of Linux-specific features whereever that would reduce the number of system calls or allow the logic to be more simple. Examples include the use of accept4 in place of accept and a pair of setsockopt calls to obtain a non-blocking, close-on-exec client socket, or the use of a Linux-specific variant of fork that returns a pidfd instead of using separate fork and pidfd_open calls. It also uses more mundane Linux-isms like an epoll-based event loop with timerfds and signalfds mixed in with the sockets, and sendfile to transfer files without userspace buffers.
