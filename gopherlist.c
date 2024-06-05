@@ -10,7 +10,7 @@
 // snprintf, fprintf
 #include <stdio.h>
 
-// atexit, getenv, malloc, calloc, reallocarray, free, qsort, bsearch
+// on_exit, exit, getenv, malloc, calloc, reallocarray, free, qsort, bsearch
 #include <stdlib.h>
 
 // strerror, strcpy, strlen, strrchr, strcmp, memrchr, strcasestr
@@ -21,6 +21,9 @@
 
 // write, getpid
 #include <unistd.h>
+
+// Starting size of filename string list
+#define NUM_FILENAMES 256
 
 // Buffering for several snprintf calls to limit the number of writes performed
 #define BUFFER_LENGTH 65536
@@ -111,20 +114,31 @@ void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
 	}
 }
 
-// List of filenames to be freed on exit
-static size_t filenames_count = 0;
-static char** filenames = NULL;
-
-static void cleanup()
+// List of filenames and a cleanup function for it
+struct filenamelist_t
 {
-	if (filenames != NULL)
+	// Array of filenames
+	char** filenames;
+	
+	// Size of array
+	size_t size;
+	
+	// Number of filenames present in array
+	size_t count;
+};
+
+static void filenamelist_cleanup(int code, void* arg)
+{
+	struct filenamelist_t* filenamelist = arg;
+	
+	if (filenamelist->filenames != NULL)
 	{
-		for (size_t i = 0; i < filenames_count; i++)
+		for (size_t i = 0; i < filenamelist->count; i++)
 		{
-			free(filenames[i]);
+			free(filenamelist->filenames[i]);
 		}
 		
-		free(filenames);
+		free(filenamelist->filenames);
 	}
 }
 
@@ -178,92 +192,24 @@ static int compare_ext_entry(const void* pa, const void* pb)
 // Main function
 int main()
 {
-	atexit(cleanup);
+	// List of filenames which must be freed on exit
+	struct filenamelist_t filenamelist =
+	{
+		.filenames = NULL,
+		.size = 0,
+		.count = 0
+	};
+	
+	on_exit(filenamelist_cleanup, &filenamelist);
 	
 	// Get the key environment variables we need
 	// It's fine if they are null, too, although it would generate a non-functional menu
 	char* env_selector = getenv("SCRIPT_NAME");
 	char* env_hostname = getenv("SERVER_NAME");
 	char* env_port = getenv("SERVER_PORT");
-	
-	// Also check for a query string indicating a filename search
 	char* env_query = getenv("QUERY_STRING");
 	
-	// Allocate the list of filenames with a starter size that may be increased later
-	size_t filenames_size = 256;
-	
-	filenames = calloc(filenames_size, sizeof(char*));
-	
-	if (filenames == NULL)
-	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filenames: %s\n", getpid(), strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-	
-	// Open a directory stream for the working directory so we can go through its files and add them to the list
-	DIR* directory = opendir(".");
-	
-	if (directory == NULL)
-	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot opendir: %s\n", getpid(), strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-	
-	struct dirent* entry;
-	
-	while (entry = readdir(directory), entry != NULL)
-	{
-		// Ignore hidden files
-		if (entry->d_name[0] == '.')
-		{
-			continue;
-		}
-		
-		// Make a copy of the filename
-		char* filename = malloc(strlen(entry->d_name) + 1);
-		
-		if (filename == NULL)
-		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
-			closedir(directory);
-			exit(EXIT_FAILURE);
-		}
-		
-		strcpy(filename, entry->d_name);
-		
-		// Add the filename to the list
-		filenames[filenames_count] = filename;
-		
-		filenames_count++;
-		
-		// Resize the list if necessary
-		if (filenames_count == filenames_size)
-		{
-			filenames_size *= 2;
-			
-			filenames = reallocarray(filenames, filenames_size, sizeof(char*));
-			
-			if (filenames == NULL)
-			{
-				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
-				closedir(directory);
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-	
-	closedir(directory);
-	
-	// Sort the list of filenames
-	qsort(filenames, filenames_count, sizeof(char*), compare_strings);
-	
-	// Prepare a buffer for the output to produce a minimum number of writes
-	char buffer[BUFFER_LENGTH];
-	
-	struct snbuffer_t snbuffer;
-	
-	snbuffer_setup(&snbuffer, STDOUT_FILENO, buffer, BUFFER_LENGTH);
-	
+	// Examine selector for key positions of slashes
 	// Figure out where the final slash is, assuming it denotes what the containing directory is
 	char* last_slash = NULL;
 	
@@ -285,14 +231,95 @@ int main()
 		last_slash = env_selector;
 	}
 	
-	// For filename searching
-	unsigned int files_found = 0;
+	// Figure out if there was actually a query by checking it for a non-zero length
 	size_t query_len = 0;
 	
 	if (env_query != NULL)
 	{
 		query_len = strlen(env_query);
 	}
+	
+	// Allocate a list of filenames with a starter size that may be expanded later if needed
+	filenamelist.size = NUM_FILENAMES;
+	
+	filenamelist.filenames = calloc(filenamelist.size, sizeof(char*));
+	
+	if (filenamelist.filenames == NULL)
+	{
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename list: %s\n", getpid(), strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	// Open a directory stream for the working directory
+	DIR* directory = opendir(".");
+	
+	if (directory == NULL)
+	{
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot opendir: %s\n", getpid(), strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	
+	// Go through the files and add them to the list if they meet some basic requirements
+	struct dirent* entry;
+	
+	while (entry = readdir(directory), entry != NULL)
+	{
+		// Ignore hidden files
+		if (entry->d_name[0] == '.')
+		{
+			continue;
+		}
+		
+		// Check filename for query string, case-insensitive, and discard it if there was no match
+		if (query_len > 0)
+		{
+			if (strcasestr(entry->d_name, env_query) == NULL)
+			{
+				continue;
+			}
+		}
+		
+		// Make a copy of the filename (+1 to make room for the null terminator)
+		char* filename = malloc(strlen(entry->d_name) + 1);
+		
+		if (filename == NULL)
+		{
+			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
+			closedir(directory);
+			exit(EXIT_FAILURE);
+		}
+		
+		strcpy(filename, entry->d_name);
+		
+		// Add the filename to the list
+		filenamelist.filenames[filenamelist.count++] = filename;
+		
+		// Resize the filename list if it's full, doubling it in size
+		if (filenamelist.count == filenamelist.size)
+		{
+			filenamelist.size *= 2;
+			
+			filenamelist.filenames = reallocarray(filenamelist.filenames, filenamelist.size, sizeof(char*));
+			
+			if (filenamelist.filenames == NULL)
+			{
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
+				closedir(directory);
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+	
+	closedir(directory);
+	
+	// Sort the list of filenames
+	qsort(filenamelist.filenames, filenamelist.count, sizeof(char*), compare_strings);
+	
+	// Prepare a buffer for the output to produce a minimum number of writes
+	struct snbuffer_t snbuffer;
+	char buffer[BUFFER_LENGTH];
+	
+	snbuffer_setup(&snbuffer, STDOUT_FILENO, buffer, BUFFER_LENGTH);
 	
 	// Build header, which includes a "parent directory" link if one can be derived from the selector
 	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of %s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector));
@@ -309,23 +336,13 @@ int main()
 		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector) + 1, env_selector, env_hostname, env_port));
 	}
 	
+	// Counter for valid files
+	unsigned int files_found = 0;
+	
 	// Build list of filenames
-	for (size_t i = 0; i < filenames_count; i++)
+	for (size_t i = 0; i < filenamelist.count; i++)
 	{
-		char* filename = filenames[i];
-		
-		// Check filename for query string, case-insensitive
-		if (query_len > 0)
-		{
-			char* found = strcasestr(filename, env_query);
-			
-			if (found == NULL)
-			{
-				continue;
-			}
-			
-			files_found++;
-		}
+		char* filename = filenamelist.filenames[i];
 		
 		// Get the file stats
 		struct stat statbuf;
@@ -356,7 +373,7 @@ int main()
 			}
 			else
 			{
-				// Default behavior for regular non-executable files is to download as a binary file
+				// Default behavior for regular non-executable files with no or an unknown extension is to download as a binary file
 				type = '9';
 				
 				// If the file has an extension, inspect it for further context
@@ -393,6 +410,8 @@ int main()
 			// Skip other types of files
 			continue;
 		}
+		
+		files_found++;
 		
 		// Build the menu line
 		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "%c%s\t%.*s/%s\t%s\t%s\r\n", type, filename, (int)(last_slash - env_selector), env_selector, filename, env_hostname, env_port));

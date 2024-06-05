@@ -25,7 +25,7 @@ Firstly, it does not append a .CRLF sequence to the end of gophermaps. Static go
 
 Secondly, it transfers text files as they exist on the disk. It does not reprocess them to change line endings, escape periods at the start of a line, or anything else. It did so during testing and in my experience either clients don't care or they get confused by it, so I went with the simplest case in the end.
 
-Note: sgopher insists that valid requests to end with a CRLF sequence as stated in RFC 1436. It will reject clients that only send LF.
+Note: sgopher insists that valid requests end with a CRLF sequence as stated in RFC 1436. It will reject clients that only send LF.
 
 ## "CGI"
 Executable files, scripts or binaries, are not served directly by sgopher. They are executed in a forked process using an interface inspired by HTTP's CGI standard. These programs will be hereafter referred to as CGI programs, but note that it does not fully conform to the real CGI standard.
@@ -77,7 +77,7 @@ lrwxrwxrwx 1 sarah sarah   16 May  6 06:49 .gophermap -> ../../gopherlist
 
 When the directory is accessed by a user, a gophermap presenting a file listing will be generated and presented to the client. Files will only be listed if they meet the requirements to be served: the filename must not start with a period, it must be world-readable, and if it is a directory it must also be world-executable. A parent directory link will be generated if applicable based on the selector. Files will be assigned a menu type based on if they are executable files (menu type 7), directories (menu type 1), or otherwise, a variety of possibilities based on the file extension. The server's externally-accessible hostname must be set correctly with the --hostname option or the links will not work correctly.
 
-gopherlist does not necessarily need to be the gophermap of a directory. Based on the position of the final slash in the selector, it will determine if it was invoked by name or by directory and generate the listing accordingly. In this case, it will list itself with menu type 7 among the files in the directory.
+gopherlist does not necessarily need to be the default gophermap of a directory. Based on the position of the final slash in the selector, it will determine if it was invoked by name or by directory and generate the listing accordingly. If it is not used as a default gophermap with a filename beginning with a period, it will list itself with menu type 7 among the files in the directory.
 
 If invoked with a query string, it will display only those files with names that contain the provided query as a substring.
 
