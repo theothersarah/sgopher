@@ -75,8 +75,8 @@
 #define MAX_REQUEST_SIZE 2*255 + 2
 
 // Maximum filename size for a request that has been processed into a null-terminated relative path
-// -2 because CRLF is cut off and +3 to add ./ to the start and null to the end
-#define MAX_FILENAME_SIZE MAX_REQUEST_SIZE - 2 + 3
+// -2 because CRLF is cut off and +3 to add ./ to the start, a null to the end, and possibly a trailing / for a directory
+#define MAX_FILENAME_SIZE MAX_REQUEST_SIZE - 2 + 4
 
 // Size of buffers for CGI environment variables
 // Arbitrary but generous, and if it's exceeded the string is truncated safely
@@ -432,7 +432,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					
 					if (filename_slash == NULL)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash is filename %s\n", getpid(), filename);
+						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash in filename %s\n", getpid(), filename);
 						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
 						exit(EXIT_FAILURE);
 					}

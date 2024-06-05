@@ -180,11 +180,13 @@ int main()
 {
 	atexit(cleanup);
 	
-	// Get the environment variables we need
+	// Get the key environment variables we need
 	// It's fine if they are null, too, although it would generate a non-functional menu
 	char* env_selector = getenv("SCRIPT_NAME");
 	char* env_hostname = getenv("SERVER_NAME");
 	char* env_port = getenv("SERVER_PORT");
+	
+	// Also check for a query string indicating a filename search
 	char* env_query = getenv("QUERY_STRING");
 	
 	// Allocate the list of filenames with a starter size that may be increased later
@@ -293,18 +295,18 @@ int main()
 	}
 	
 	// Build header, which includes a "parent directory" link if one can be derived from the selector
-	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of gopher://%s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector));
-	
-	if (parent_slash != NULL)
-	{
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector), env_selector, env_hostname, env_port));
-	}
-	
-	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\n"));
+	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of %s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector));
 	
 	if (query_len > 0)
 	{
 		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iShowing filenames containing %s\r\n", env_query));
+	}
+	
+	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\n"));
+	
+	if (parent_slash != NULL)
+	{
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector) + 1, env_selector, env_hostname, env_port));
 	}
 	
 	// Build list of filenames
@@ -399,7 +401,7 @@ int main()
 	// Add the footer and output the buffer
 	if (query_len > 0)
 	{
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iFound %u files\r\n", files_found));
+		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\niFound %u files\r\n", files_found));
 	}
 
 	snbuffer_push(&snbuffer, 0, snprintf(snbuffer.pos, snbuffer.size, ".\r\n"));
