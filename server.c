@@ -154,6 +154,13 @@ static void client_disconnect(struct server_t* server, struct client_t* client)
 		close(client->dirfd);
 	}
 	
+	// Deal with the pidfd, if any
+	if (client->pidfd >= 0)
+	{
+		sepoll_remove(server->loop, client->pidfd);
+		close(client->pidfd);
+	}
+	
 	// Deal with the socket
 	sepoll_remove(server->loop, client->socket);
 	close(client->socket);
@@ -173,10 +180,9 @@ static inline void pidfd_kill_client(struct server_t* server, struct client_t* c
 {
 	if (pidfd_send_signal(client->pidfd, SIGKILL, NULL, 0) < 0)
 	{
+		// This shouldn't fail undless something is deeply wrong
+		// In the event that it does, boot the client and pray for the best
 		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %s\n", getpid(), strerror(errno));
-		
-		close(client->pidfd);
-		client->pidfd = -1;
 		
 		client_disconnect(server, client);
 	}
@@ -190,12 +196,8 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 	struct server_t* server = userdata1;
 	struct client_t* client = userdata2;
 	
-	// Now that the process has ended we can boot the client
+	// Now that the process has ended we can disconnect the client
 	client_disconnect(server, client);
-	
-	// Now we're done with the pidfd
-	sepoll_remove(server->loop, fd);
-	close(fd);
 }
 
 // *********************************************************************
@@ -1043,6 +1045,8 @@ static void server_cleanup(int code, void* arg)
 	}
 	
 	// Disconnect all clients
+	// This is a slightly faster variant of calling client_disconnect
+	// It frees all the resources and does none of the bookkeeping which no longer matters
 	struct client_t* client = LIST_FIRST(&server->clients);
 	
 	while (client != NULL)
