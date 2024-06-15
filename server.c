@@ -15,7 +15,7 @@
 // sigaction, sigemptyset, sigaddset, sigprocmask
 #include <signal.h>
 
-// fprintf, snprintf
+// fprintf, snprintf, dprintf
 #include <stdio.h>
 
 // malloc, free, on_exit, exit
@@ -54,7 +54,7 @@
 // time
 #include <time.h>
 
-// read, write, close, getpid, dup2, dup, fexecve, fchdir
+// read, close, getpid, dup2, dup, fexecve, fchdir
 #include <unistd.h>
 
 // event loop functions
@@ -82,13 +82,15 @@
 // Arbitrary but generous, and if it's exceeded the string is truncated safely
 #define ENV_BUFFER_SIZE 1024
 
-// Error messages formatted as gopher menus
-#define ERROR_BAD "3400 Bad Request\r\n.\r\n"
-#define ERROR_FORBIDDEN "3403 Forbidden\r\n.\r\n"
-#define ERROR_NOTFOUND "3404 Not Found\r\n.\r\n"
-#define ERROR_TIMEOUT "3408 Request Timeout\r\n.\r\n"
-#define ERROR_INTERNAL "3500 Internal Server Error\r\n.\r\n"
-#define ERROR_UNAVAILABLE "3503 Service Unavailable\r\n.\r\n"
+// Error messages plus a format string to make them into gopher menus
+#define ERROR_FORMAT "3%s\r\n.\r\n"
+
+#define ERROR_BAD "400 Bad Request"
+#define ERROR_FORBIDDEN "403 Forbidden"
+#define ERROR_NOTFOUND "404 Not Found"
+#define ERROR_TIMEOUT "408 Request Timeout"
+#define ERROR_INTERNAL "500 Internal Server Error"
+#define ERROR_UNAVAILABLE "503 Service Unavailable"
 
 // *********************************************************************
 // Definitions
@@ -229,7 +231,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				else
 				{
 					fprintf(stderr, "%i - Error: Cannot read from client: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 					client_disconnect(server, client);
 					return;
 				}
@@ -250,7 +252,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// No patience if a valid request didn't arrive yet after we did 2+ reads from the socket already
 		if (crlf == NULL)
 		{
-			write(fd, ERROR_BAD, sizeof(ERROR_BAD) - 1);
+			dprintf(fd, ERROR_FORMAT, ERROR_BAD);
 			client_disconnect(server, client);
 			return;
 		}
@@ -319,7 +321,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				{
 					if (*str_pos == '.')
 					{
-						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
 						client_disconnect(server, client);
 						return;
 					}
@@ -340,7 +342,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		
 		if (client->file < 0)
 		{
-			write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
+			dprintf(fd, ERROR_FORMAT, ERROR_NOTFOUND);
 			client_disconnect(server, client);
 			return;
 		}
@@ -351,7 +353,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		if (fstat(client->file, &statbuf) < 0)
 		{
 			fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
-			write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+			dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 			client_disconnect(server, client);
 			return;
 		}
@@ -359,7 +361,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Check if world readable
 		if (!(statbuf.st_mode & S_IROTH))
 		{
-			write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+			dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
 			client_disconnect(server, client);
 			return;
 		}
@@ -381,7 +383,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			if (client->file < 0)
 			{
-				write(fd, ERROR_NOTFOUND, sizeof(ERROR_NOTFOUND) - 1);
+				dprintf(fd, ERROR_FORMAT, ERROR_NOTFOUND);
 				client_disconnect(server, client);
 				return;
 			}
@@ -390,7 +392,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (fstat(client->file, &statbuf) < 0)
 			{
 				fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
-				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
 			}
@@ -398,7 +400,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// If it isn't world readable or a regular file, get out of here
 			if (!(statbuf.st_mode & S_IROTH) || !S_ISREG(statbuf.st_mode))
 			{
-				write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+				dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
 				client_disconnect(server, client);
 				return;
 			}
@@ -408,7 +410,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		}
 		else
 		{
-			write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+			dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
 			client_disconnect(server, client);
 			return;
 		}
@@ -435,7 +437,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (filename_slash == NULL)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash in filename %s\n", getpid(), filename);
-						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -449,7 +451,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (client->dirfd < 0)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %s\n", getpid(), pathname, strerror(errno));
-						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -457,14 +459,14 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (fstat(client->dirfd, &statbuf) < 0)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot fstat %s: %s\n", getpid(), pathname, strerror(errno));
-						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
 					// If it isn't world readable or a world executable we're done
 					if (!(statbuf.st_mode & S_IROTH) || !(statbuf.st_mode & S_IXOTH))
 					{
-						write(fd, ERROR_FORBIDDEN, sizeof(ERROR_FORBIDDEN) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -481,7 +483,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (fchdir(client->dirfd) < 0)
 				{
 					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
 				
@@ -522,7 +524,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (dup2(fd, STDOUT_FILENO) < 0)
 				{
 					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
-					write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
 				
@@ -531,13 +533,13 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 
 				// This is only reached if there was a problem with fexecve
 				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
-				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 				exit(EXIT_FAILURE);
 			}
 			else if (pid < 0)
 			{
 				fprintf(stderr, "%i - Error: Cannot fork CGI process: %s\n", getpid(), strerror(errno));
-				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
 			}
@@ -591,7 +593,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// Only send the error message if none of the file has been sent yet
 					if (client->sentsize == 0)
 					{
-						write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 					}
 				}
 				
@@ -661,7 +663,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (server->numClients == server->params->maxClients)
 			{
 				// Server's full
-				write(fd, ERROR_UNAVAILABLE, sizeof(ERROR_UNAVAILABLE) - 1);
+				dprintf(client_fd, ERROR_FORMAT, ERROR_UNAVAILABLE);
 				close(client_fd);
 				continue;
 			}
@@ -672,7 +674,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (client == NULL)
 			{
 				fprintf(stderr, "%i - Error: Cannot allocate memory for new client: %s\n", getpid(), strerror(errno));
-				write(fd, ERROR_INTERNAL, sizeof(ERROR_INTERNAL) - 1);
+				dprintf(client_fd, ERROR_FORMAT, ERROR_INTERNAL);
 				close(client_fd);
 				continue;
 			}
@@ -792,7 +794,7 @@ static void server_timer(int fd, unsigned int events, void* userdata1, void* use
 				// Send timeout error if nothing has been sent yet
 				if (client->sentsize == 0)
 				{
-					write(client->socket, ERROR_TIMEOUT, sizeof(ERROR_TIMEOUT) - 1);
+					dprintf(client->socket, ERROR_FORMAT, ERROR_TIMEOUT);
 				}
 				
 				client_disconnect(server, client);

@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -D_FORTIFY_SOURCE=2 -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-unused-result -Wconversion -O3
+CFLAGS = -D_FORTIFY_SOURCE=2 -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wconversion -O3
 LDFLAGS = 
 
 sgopher_OBJFILES = main.o server.o sepoll.o sfork.o

@@ -10,10 +10,10 @@
 // snprintf, fprintf
 #include <stdio.h>
 
-// on_exit, exit, getenv, malloc, calloc, reallocarray, free, qsort, bsearch
+// on_exit, exit, getenv, calloc, reallocarray, free, qsort, bsearch
 #include <stdlib.h>
 
-// strerror, strcpy, strlen, strrchr, strcmp, memrchr, strcasestr
+// strerror, strdup, strlen, strrchr, strcmp, memrchr, strcasestr
 #include <string.h>
 
 // stat
@@ -280,7 +280,7 @@ int main()
 		}
 		
 		// Make a copy of the filename (+1 to make room for the null terminator)
-		char* filename = malloc(strlen(entry->d_name) + 1);
+		char* filename = strdup(entry->d_name);
 		
 		if (filename == NULL)
 		{
@@ -288,8 +288,6 @@ int main()
 			closedir(directory);
 			exit(EXIT_FAILURE);
 		}
-		
-		strcpy(filename, entry->d_name);
 		
 		// Add the filename to the list
 		filenamelist.filenames[filenamelist.count++] = filename;
@@ -422,7 +420,7 @@ int main()
 	{
 		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\niFound %u files\r\n", files_found));
 	}
-
+	
 	snbuffer_push(&snbuffer, 0, snprintf(snbuffer.pos, snbuffer.size, ".\r\n"));
 	
 	snbuffer_flush(&snbuffer);
