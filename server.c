@@ -423,6 +423,19 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			if (pid == 0)
 			{
+				// Reset signal mask
+				sigset_t mask;
+				
+				sigemptyset(&mask);
+				
+				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
+				{
+						fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %s\n", getpid(), strerror(errno));
+						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						exit(EXIT_FAILURE);
+				}
+				
+				// First argument for fexecve
 				char* command;
 				
 				// If we don't already have a file descriptor for the containing directory, we need to figure one out from the filename
@@ -821,8 +834,7 @@ static int setupsignals()
 	// Ignore signals
 	struct sigaction act =
 	{
-		.sa_handler = SIG_IGN,
-		
+		.sa_handler = SIG_IGN
 	};
 	
 	// We want to ignore SIGCHLD because we don't care about child exit codes and want it to be automatically reaped
