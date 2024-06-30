@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 #include <linux/sched.h>
-#include <sched.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -15,7 +14,7 @@ pid_t sfork(int* pidfd, __u64 flags)
 	struct clone_args args =
 	{
 		.flags = CLONE_PIDFD | flags,
-		.pidfd = (__aligned_u64)pidfd,
+		.pidfd = (__u64)pidfd,
 		.exit_signal = SIGCHLD
 	};
 	
