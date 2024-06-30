@@ -419,7 +419,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		if (statbuf.st_mode & S_IXOTH)
 		{
 			// This custom fork returns both a pid and pidfd with one syscall
-			pid_t pid = sfork(&client->pidfd);
+			pid_t pid = sfork(&client->pidfd, CLONE_CLEAR_SIGHAND);
 			
 			if (pid == 0)
 			{

@@ -374,7 +374,7 @@ int main(int argc, char* argv[])
 		int pidfd;
 		
 		// This custom fork returns both a pid and a pidfd to the parent
-		pid_t pid = sfork(&pidfd);
+		pid_t pid = sfork(&pidfd, 0);
 	
 		if (pid == 0) // Worker
 		{

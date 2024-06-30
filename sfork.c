@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <linux/sched.h>
 #include <sched.h>
 #include <signal.h>
 #include <sys/syscall.h>
@@ -9,7 +10,14 @@
 // It does not perform any of the additional tasks that the glic fork does, because
 // they are not relevant to how I am using it. However, because of that, it is not
 // strictly a drop-in upgrade for fork.
-pid_t sfork(int* pidfd)
+pid_t sfork(int* pidfd, __u64 flags)
 {
-	return (pid_t)syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, NULL, pidfd, NULL, 0);
+	struct clone_args args =
+	{
+		.flags = CLONE_PIDFD | flags,
+		.pidfd = (__aligned_u64)pidfd,
+		.exit_signal = SIGCHLD
+	};
+	
+	return (pid_t)syscall(SYS_clone3, &args, sizeof(struct clone_args));
 }
