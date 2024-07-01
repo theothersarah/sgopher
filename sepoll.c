@@ -19,6 +19,9 @@
 // close
 #include <unistd.h>
 
+//
+# include "sepoll.h"
+
 // *********************************************************************
 // Core definitions
 // *********************************************************************
@@ -29,10 +32,10 @@ struct sepoll_callback_t
 	int fd;
 	
 	// Function pointer and userdata arguments
-	void (*function)(int, unsigned int, void*, void*);
+	void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t);
 	
-	void* userdata1;
-	void* userdata2;
+	union sepoll_arg_t userdata1;
+	union sepoll_arg_t userdata2;
 	
 	// Can also be added to a list while awaiting garbage collection
 	LIST_ENTRY(sepoll_callback_t) entry;
@@ -209,7 +212,8 @@ void sepoll_destroy(struct sepoll_t* loop)
 // Add, modify, and remove an event
 // *********************************************************************
 
-int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+// Add an FD to the poll list
+int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	// Allocate memory for the callback and initialize it
 	struct sepoll_callback_t* callback = malloc(sizeof(struct sepoll_callback_t));
@@ -251,7 +255,8 @@ int sepoll_add(struct sepoll_t* loop, int fd, unsigned int events, void (*functi
 	return 0;
 }
 
-int sepoll_mod(struct sepoll_t* loop, int fd, unsigned int events, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+// Modify event mask, callback function, and userdata for a polled FD
+int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
@@ -278,7 +283,8 @@ int sepoll_mod(struct sepoll_t* loop, int fd, unsigned int events, void (*functi
 	return 0;
 }
 
-int sepoll_mod_events(struct sepoll_t* loop, int fd, unsigned int events)
+// Change only the event mask for a polled FD
+int sepoll_mod_events(struct sepoll_t* loop, int fd, uint32_t events)
 {
 	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
@@ -296,7 +302,8 @@ int sepoll_mod_events(struct sepoll_t* loop, int fd, unsigned int events)
 	return epoll_ctl(loop->epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 
-int sepoll_mod_userdata(struct sepoll_t* loop, int fd, void (*function)(int, unsigned int, void*, void*), void* userdata1, void* userdata2)
+// Change only the callback function and userdata for a polled FD
+int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
@@ -312,6 +319,7 @@ int sepoll_mod_userdata(struct sepoll_t* loop, int fd, void (*function)(int, uns
 	return 0;
 }
 
+// Remove an FD from the poll list
 int sepoll_remove(struct sepoll_t* loop, int fd)
 {
 	// Get the event data associated with the file descriptor
@@ -337,6 +345,7 @@ int sepoll_remove(struct sepoll_t* loop, int fd)
 // Functions for entering the event loop
 // *********************************************************************
 
+// One iteration of the event loop, used by sepoll_enter and sepoll_once
 static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 {
 	// Wait on epoll events or a timeout
@@ -354,7 +363,7 @@ static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 		
 		if (callback->function != NULL)
 		{
-			callback->function(callback->fd, loop->epoll_events[i].events, callback->userdata1, callback->userdata2);
+			callback->function(loop->epoll_events[i].events, callback->userdata1, callback->userdata2);
 		}
 	}
 	
@@ -375,6 +384,7 @@ static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
 	return n;
 }
 
+// Enter the event loop until sepoll_exit is called within a callback function
 int sepoll_enter(struct sepoll_t* loop)
 {
 	loop->run = true;
@@ -393,11 +403,13 @@ int sepoll_enter(struct sepoll_t* loop)
 	return 0;
 }
 
+// Exit the event loop
 void sepoll_exit(struct sepoll_t* loop)
 {
 	loop->run = false;
 }
 
+// Do one iteration of the event loop
 int sepoll_once(struct sepoll_t* loop, int timeout)
 {
 	return sepoll_iter(loop, timeout);

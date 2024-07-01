@@ -171,15 +171,15 @@ static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool cl
 // *********************************************************************
 // Handle event on a signalfd
 // *********************************************************************
-static void sigfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void sigfd_event(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct supervisor_t* supervisor = userdata1;
+	struct supervisor_t* supervisor = userdata1.ptr;
 	
 	while (1)
 	{
 		struct signalfd_siginfo siginfo;
 		
-		if (read(fd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
+		if (read(supervisor->sigfd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
 		{
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 			{
@@ -207,15 +207,15 @@ static void sigfd_event(int fd, unsigned int events, void* userdata1, void* user
 // *********************************************************************
 // Handle event on a pidfd
 // *********************************************************************
-static void pidfd_event(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void pidfd_event(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct supervisor_t* supervisor = userdata1;
-	struct worker_t* worker = userdata2;
+	struct supervisor_t* supervisor = userdata1.ptr;
+	struct worker_t* worker = userdata2.ptr;
 	
 	// Get the exit code and reap the child process
 	siginfo_t siginfo;
 	
-	if (waitid(P_PIDFD, (id_t)fd, &siginfo, WEXITED) < 0)
+	if (waitid(P_PIDFD, (id_t)worker->pidfd, &siginfo, WEXITED) < 0)
 	{
 		fprintf(stderr, "S - Worker PID %i exited but waitid failed: %s\n", worker->pid, strerror(errno));
 	}
@@ -225,8 +225,8 @@ static void pidfd_event(int fd, unsigned int events, void* userdata1, void* user
 	}
 	
 	// Deal with the file descriptor
-	sepoll_remove(supervisor->loop, fd);
-	close(fd);
+	sepoll_remove(supervisor->loop, worker->pidfd);
+	close(worker->pidfd);
 	
 	worker->pidfd = -1;
 	

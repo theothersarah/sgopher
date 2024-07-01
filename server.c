@@ -193,10 +193,10 @@ static inline void pidfd_kill_client(struct server_t* server, struct client_t* c
 // *********************************************************************
 // Handle event on pidfd
 // *********************************************************************
-static void client_pidfd(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void client_pidfd(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct server_t* server = userdata1;
-	struct client_t* client = userdata2;
+	struct server_t* server = userdata1.ptr;
+	struct client_t* client = userdata2.ptr;
 	
 	// Now that the process has ended we can disconnect the client
 	client_disconnect(server, client);
@@ -205,17 +205,17 @@ static void client_pidfd(int fd, unsigned int events, void* userdata1, void* use
 // *********************************************************************
 // Handle event on a client socket
 // *********************************************************************
-static void client_socket(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void client_socket(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct server_t* server = userdata1;
-	struct client_t* client = userdata2;
+	struct server_t* server = userdata1.ptr;
+	struct client_t* client = userdata2.ptr;
 	
 	if (events & EPOLLIN)
 	{
 		// Read socket into client's buffer until it is full or the read would block
 		do
 		{
-			ssize_t count = read(fd, client->buffer + client->count, MAX_REQUEST_SIZE - client->count);
+			ssize_t count = read(client->socket, client->buffer + client->count, MAX_REQUEST_SIZE - client->count);
 			
 			if (count < 0)
 			{
@@ -231,7 +231,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				else
 				{
 					fprintf(stderr, "%i - Error: Cannot read from client: %s\n", getpid(), strerror(errno));
-					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					client_disconnect(server, client);
 					return;
 				}
@@ -252,7 +252,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// No patience if a valid request didn't arrive yet after we did 2+ reads from the socket already
 		if (crlf == NULL)
 		{
-			dprintf(fd, ERROR_FORMAT, ERROR_BAD);
+			dprintf(client->socket, ERROR_FORMAT, ERROR_BAD);
 			client_disconnect(server, client);
 			return;
 		}
@@ -321,7 +321,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				{
 					if (*str_pos == '.')
 					{
-						dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 						client_disconnect(server, client);
 						return;
 					}
@@ -342,7 +342,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		
 		if (client->file < 0)
 		{
-			dprintf(fd, ERROR_FORMAT, ERROR_NOTFOUND);
+			dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
 			client_disconnect(server, client);
 			return;
 		}
@@ -353,7 +353,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		if (fstat(client->file, &statbuf) < 0)
 		{
 			fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
-			dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+			dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 			client_disconnect(server, client);
 			return;
 		}
@@ -361,7 +361,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Check if world readable
 		if (!(statbuf.st_mode & S_IROTH))
 		{
-			dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
+			dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 			client_disconnect(server, client);
 			return;
 		}
@@ -383,7 +383,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			if (client->file < 0)
 			{
-				dprintf(fd, ERROR_FORMAT, ERROR_NOTFOUND);
+				dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
 				client_disconnect(server, client);
 				return;
 			}
@@ -392,7 +392,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (fstat(client->file, &statbuf) < 0)
 			{
 				fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
-				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
 			}
@@ -400,7 +400,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			// If it isn't world readable or a regular file, get out of here
 			if (!(statbuf.st_mode & S_IROTH) || !S_ISREG(statbuf.st_mode))
 			{
-				dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
+				dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 				client_disconnect(server, client);
 				return;
 			}
@@ -410,7 +410,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		}
 		else
 		{
-			dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
+			dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 			client_disconnect(server, client);
 			return;
 		}
@@ -431,7 +431,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
 				{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %s\n", getpid(), strerror(errno));
-						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 				}
 				
@@ -450,7 +450,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (filename_slash == NULL)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash in filename %s\n", getpid(), filename);
-						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -464,7 +464,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (client->dirfd < 0)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %s\n", getpid(), pathname, strerror(errno));
-						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -472,14 +472,14 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					if (fstat(client->dirfd, &statbuf) < 0)
 					{
 						fprintf(stderr, "%i (CGI process) - Error: Cannot fstat %s: %s\n", getpid(), pathname, strerror(errno));
-						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
 					
 					// If it isn't world readable or a world executable we're done
 					if (!(statbuf.st_mode & S_IROTH) || !(statbuf.st_mode & S_IXOTH))
 					{
-						dprintf(fd, ERROR_FORMAT, ERROR_FORBIDDEN);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 						exit(EXIT_FAILURE);
 					}
 					
@@ -496,7 +496,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				if (fchdir(client->dirfd) < 0)
 				{
 					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %s\n", getpid(), strerror(errno));
-					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
 				
@@ -534,25 +534,25 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 				};
 				
 				// Replace the fork's stdout FD with the socket FD
-				if (dup2(fd, STDOUT_FILENO) < 0)
+				if (dup2(client->socket, STDOUT_FILENO) < 0)
 				{
 					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
-					dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
 				
 				// dup makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
 				fexecve(dup(client->file), argv, envp);
-
+				
 				// This is only reached if there was a problem with fexecve
 				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
-				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				exit(EXIT_FAILURE);
 			}
 			else if (pid < 0)
 			{
 				fprintf(stderr, "%i - Error: Cannot fork CGI process: %s\n", getpid(), strerror(errno));
-				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
 			}
@@ -562,7 +562,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 			client->file = -1;
 			
 			// Alter the events on the client socket to only handle errors
-			sepoll_mod_events(server->loop, fd, EPOLLET);
+			sepoll_mod_events(server->loop, client->socket, EPOLLET);
 			
 			// Add the pidfd to the event loop
 			sepoll_add(server->loop, client->pidfd, EPOLLIN, client_pidfd, server, client);
@@ -571,7 +571,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		{
 			// Otherwise, transmit the file
 			client->filesize = statbuf.st_size;
-			sepoll_mod_events(server->loop, fd, EPOLLOUT | EPOLLET);
+			sepoll_mod_events(server->loop, client->socket, EPOLLOUT | EPOLLET);
 		}
 		
 		// If we opened a directory, it's no longer needed now
@@ -590,7 +590,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 		// Do sendfile until it would block or is complete
 		do
 		{
-			ssize_t n = sendfile(fd, client->file, &client->sentsize, (size_t)(client->filesize - client->sentsize));
+			ssize_t n = sendfile(client->socket, client->file, &client->sentsize, (size_t)(client->filesize - client->sentsize));
 			
 			if (n < 0)
 			{
@@ -606,7 +606,7 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 					// Only send the error message if none of the file has been sent yet
 					if (client->sentsize == 0)
 					{
-						dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					}
 				}
 				
@@ -644,9 +644,9 @@ static void client_socket(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 // Handle event on the listening socket
 // *********************************************************************
-static void server_socket(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void server_socket(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct server_t* server = userdata1;
+	struct server_t* server = userdata1.ptr;
 	
 	if (events & EPOLLIN)
 	{
@@ -657,9 +657,9 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			struct sockaddr_in client_addr;
 			socklen_t client_addr_len = sizeof(client_addr);
 			
-			int client_fd = accept4(fd, (struct sockaddr*)&client_addr, &client_addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+			int fd = accept4(server->socket, (struct sockaddr*)&client_addr, &client_addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
 			
-			if (client_fd < 0)
+			if (fd < 0)
 			{
 				if (errno == EAGAIN || errno == EWOULDBLOCK)
 				{
@@ -676,8 +676,8 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (server->numClients == server->params->maxClients)
 			{
 				// Server's full
-				dprintf(client_fd, ERROR_FORMAT, ERROR_UNAVAILABLE);
-				close(client_fd);
+				dprintf(fd, ERROR_FORMAT, ERROR_UNAVAILABLE);
+				close(fd);
 				continue;
 			}
 			
@@ -687,13 +687,13 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			if (client == NULL)
 			{
 				fprintf(stderr, "%i - Error: Cannot allocate memory for new client: %s\n", getpid(), strerror(errno));
-				dprintf(client_fd, ERROR_FORMAT, ERROR_INTERNAL);
-				close(client_fd);
+				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
+				close(fd);
 				continue;
 			}
 			
 			// Initialize the client, add their socket FD to the watch list, and add the client to the list
-			client->socket = client_fd;
+			client->socket = fd;
 			client->timestamp = time(NULL);
 			client->count = 0;
 			client->file = -1;
@@ -703,7 +703,7 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 			
 			inet_ntop(AF_INET, &client_addr.sin_addr, client->address, INET_ADDRSTRLEN);
 			
-			sepoll_add(server->loop, client_fd, EPOLLIN | EPOLLET, client_socket, server, client);
+			sepoll_add(server->loop, fd, EPOLLIN | EPOLLET, client_socket, server, client);
 			
 			LIST_INSERT_HEAD(&server->clients, client, entry);
 			
@@ -725,15 +725,15 @@ static void server_socket(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 // signalfd event handler
 // *********************************************************************
-static void server_signal(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void server_signal(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct server_t* server = userdata1;
+	struct server_t* server = userdata1.ptr;
 	
 	while (1)
 	{
 		struct signalfd_siginfo siginfo;
 		
-		if (read(fd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
+		if (read(server->sigfd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
 		{
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 			{
@@ -759,14 +759,14 @@ static void server_signal(int fd, unsigned int events, void* userdata1, void* us
 // *********************************************************************
 // timerfd event handler
 // *********************************************************************
-static void server_timer(int fd, unsigned int events, void* userdata1, void* userdata2)
+static void server_timer(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
-	struct server_t* server = userdata1;
+	struct server_t* server = userdata1.ptr;
 	
 	// Have to read 8 bytes from the timer to reset it even if I don't care about the contents
 	uint64_t buffer;
 	
-	if (read(fd, &buffer, sizeof(uint64_t)) != sizeof(uint64_t))
+	if (read(server->timerfd, &buffer, sizeof(uint64_t)) != sizeof(uint64_t))
 	{
 		fprintf(stderr, "%i - Error: Cannot read from timerfd: %s\n", getpid(), strerror(errno));
 	}
