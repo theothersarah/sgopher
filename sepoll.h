@@ -22,10 +22,10 @@ int sepoll_resize(struct sepoll_t* loop, int size);
 void sepoll_destroy(struct sepoll_t* loop);
 
 // Add, modify, and remove callbacks
-int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
-int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
+int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
+int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
 int sepoll_mod_events(struct sepoll_t* loop, int fd, uint32_t events);
-int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
+int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2);
 int sepoll_remove(struct sepoll_t* loop, int fd);
 
 // Event loop management

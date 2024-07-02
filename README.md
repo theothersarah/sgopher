@@ -91,7 +91,7 @@ In order to use the default port of 70 for the Gopher protocol, sgopher must be 
 
 sudo setcap cap_net_bind_service=ep ./sgopher
 
-to do this. Additionally, ensure that sgopher is not world-executable so that unauthorized users can't run copies of their own on the same port, which would "hijack" a portion of the incoming connections. This is because to support multi-process handling of incoming connections, the workker processes enable port and address reuse on the listening port. This causes the kernel to distribute incoming connections evenly between sgopher processes, including potential "rogue" processes.
+to do this. Additionally, ensure that sgopher is not world-executable so that unauthorized users can't run copies of their own on the same port, which would "hijack" a portion of the incoming connections. This is because to support multi-process handling of incoming connections, the worker processes enable port and address reuse on the listening port. This causes the kernel to distribute incoming connections evenly between sgopher processes, including potential "rogue" processes.
 
 sgopher inspects selector strings provided by clients and rejects the client if any path components begin with ., which is intended to prevent use of relative paths to escape the serving directory. It also has the side-effect of preventing access to hidden files. Default gophermaps are not subject to this restriction, and in fact are hidden files by default. Selectors may begin with a / or not, and in either case are rebuilt as a relative path to prevent access outside of the server directory.
 

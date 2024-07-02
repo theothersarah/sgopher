@@ -171,7 +171,7 @@ static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool cl
 // *********************************************************************
 // Handle event on a signalfd
 // *********************************************************************
-static void sigfd_event(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void sigfd_event(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct supervisor_t* supervisor = userdata1.ptr;
 	
@@ -207,7 +207,7 @@ static void sigfd_event(unsigned int events, union sepoll_arg_t userdata1, union
 // *********************************************************************
 // Handle event on a pidfd
 // *********************************************************************
-static void pidfd_event(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void pidfd_event(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct supervisor_t* supervisor = userdata1.ptr;
 	struct worker_t* worker = userdata2.ptr;

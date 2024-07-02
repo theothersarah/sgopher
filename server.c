@@ -78,11 +78,11 @@
 
 // Maximum incoming request size
 // Equal to twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF
-#define MAX_REQUEST_SIZE 2*255 + 2
+#define MAX_REQUEST_SIZE (2*255 + 2)
 
 // Maximum filename size for a request that has been processed into a null-terminated relative path
-// -2 because CRLF is cut off and +3 to add ./ to the start, a null to the end, and possibly a trailing / for a directory
-#define MAX_FILENAME_SIZE MAX_REQUEST_SIZE - 2 + 4
+// -2 because CRLF is cut off and +4 to add ./ to the start, a null to the end, and possibly a trailing / for a directory
+#define MAX_FILENAME_SIZE (MAX_REQUEST_SIZE - 2 + 4)
 
 // Size of buffers for CGI environment variables
 // Arbitrary but generous, and if it's exceeded the string is truncated safely
@@ -199,7 +199,7 @@ static inline void pidfd_kill_client(struct server_t* server, struct client_t* c
 // *********************************************************************
 // Handle event on pidfd
 // *********************************************************************
-static void client_pidfd(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void client_pidfd(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct server_t* server = userdata1.ptr;
 	struct client_t* client = userdata2.ptr;
@@ -211,7 +211,7 @@ static void client_pidfd(unsigned int events, union sepoll_arg_t userdata1, unio
 // *********************************************************************
 // Handle event on a client socket
 // *********************************************************************
-static void client_socket(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct server_t* server = userdata1.ptr;
 	struct client_t* client = userdata2.ptr;
@@ -653,7 +653,7 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 // *********************************************************************
 // Handle event on the listening socket
 // *********************************************************************
-static void server_socket(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void server_socket(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct server_t* server = userdata1.ptr;
 	
@@ -734,7 +734,7 @@ static void server_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 // *********************************************************************
 // signalfd event handler
 // *********************************************************************
-static void server_signal(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void server_signal(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct server_t* server = userdata1.ptr;
 	
@@ -768,7 +768,7 @@ static void server_signal(unsigned int events, union sepoll_arg_t userdata1, uni
 // *********************************************************************
 // timerfd event handler
 // *********************************************************************
-static void server_timer(unsigned int events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+static void server_timer(uint32_t events, union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct server_t* server = userdata1.ptr;
 	

@@ -32,7 +32,7 @@ struct sepoll_callback_t
 	int fd;
 	
 	// Function pointer and userdata arguments
-	void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t);
+	void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t);
 	
 	union sepoll_arg_t userdata1;
 	union sepoll_arg_t userdata2;
@@ -213,7 +213,7 @@ void sepoll_destroy(struct sepoll_t* loop)
 // *********************************************************************
 
 // Add an FD to the poll list
-int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	// Allocate memory for the callback and initialize it
 	struct sepoll_callback_t* callback = malloc(sizeof(struct sepoll_callback_t));
@@ -256,7 +256,7 @@ int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(
 }
 
 // Modify event mask, callback function, and userdata for a polled FD
-int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
@@ -303,7 +303,7 @@ int sepoll_mod_events(struct sepoll_t* loop, int fd, uint32_t events)
 }
 
 // Change only the callback function and userdata for a polled FD
-int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(unsigned int, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
+int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(uint32_t, union sepoll_arg_t, union sepoll_arg_t), union sepoll_arg_t userdata1, union sepoll_arg_t userdata2)
 {
 	struct sepoll_callback_t* callback = sepoll_find_fd(loop, fd);
 	
