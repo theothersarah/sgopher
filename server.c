@@ -70,6 +70,12 @@
 // Constants
 // *********************************************************************
 
+// File descriptors needed for the server: 3 standard, 5 for server core functions, 1 for incoming user, 1 for dup in CGI process
+#define FDS_SERVER (3 + 5 + 1 + 1)
+
+// File descriptors needed per client
+#define FDS_CLIENT 4
+
 // Maximum incoming request size
 // Equal to twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF
 #define MAX_REQUEST_SIZE 2*255 + 2
@@ -342,38 +348,43 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 		
 		if (client->file < 0)
 		{
-			dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
+			if (errno == ENOENT)
+			{
+				dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
+			}
+			else if (errno == EACCES)
+			{
+				dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
+			}
+			else
+			{
+				fprintf(stderr, "%i - Error: Cannot open file %s: %s\n", getpid(), filename, strerror(errno));
+				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
+			}
+			
 			client_disconnect(server, client);
 			return;
 		}
 		
-		// Get file information
+		// Get file stats
 		struct stat statbuf;
 		
 		if (fstat(client->file, &statbuf) < 0)
 		{
-			fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+			fprintf(stderr, "%i - Error: Cannot fstat file %s: %s\n", getpid(), filename, strerror(errno));
 			dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 			client_disconnect(server, client);
 			return;
 		}
 		
-		// Check if world readable
-		if (!(statbuf.st_mode & S_IROTH))
-		{
-			dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
-			client_disconnect(server, client);
-			return;
-		}
-		
-		// Make sure it's a regular file, or a directory that is world executable
+		// Make sure it's a regular file or a directory
 		if (S_ISREG(statbuf.st_mode))
 		{
 			// This space intentionally blank
 			// At this point we could process the filename string to determine the containing directory path,
 			// but since that's only relevant to CGI we wait until after the fork to do it to avoid doing it if we don't have to
 		}
-		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
+		else if (S_ISDIR(statbuf.st_mode))
 		{
 			// Keep track of the directory FD for CGI purposes
 			client->dirfd = client->file;
@@ -383,7 +394,20 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 			
 			if (client->file < 0)
 			{
-				dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
+				if (errno == ENOENT)
+				{
+					dprintf(client->socket, ERROR_FORMAT, ERROR_NOTFOUND);
+				}
+				else if (errno == EACCES)
+				{
+					dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
+				}
+				else
+				{
+					fprintf(stderr, "%i - Error: Cannot open file %s in directory %s: %s\n", getpid(), server->params->indexfile, filename, strerror(errno));
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
+				}
+				
 				client_disconnect(server, client);
 				return;
 			}
@@ -391,14 +415,14 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 			// Now we need the stats of the index file
 			if (fstat(client->file, &statbuf) < 0)
 			{
-				fprintf(stderr, "%i - Error: Cannot get file information: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot fstat file %s in directory %s: %s\n", getpid(), server->params->indexfile, filename, strerror(errno));
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
 			}
 			
-			// If it isn't world readable or a regular file, get out of here
-			if (!(statbuf.st_mode & S_IROTH) || !S_ISREG(statbuf.st_mode))
+			// Make sure it's a regular file
+			if (!S_ISREG(statbuf.st_mode))
 			{
 				dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
 				client_disconnect(server, client);
@@ -423,18 +447,6 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 			
 			if (pid == 0)
 			{
-				// Reset signal mask
-				sigset_t mask;
-				
-				sigemptyset(&mask);
-				
-				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
-				{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %s\n", getpid(), strerror(errno));
-						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-						exit(EXIT_FAILURE);
-				}
-				
 				// First argument for fexecve
 				char* command;
 				
@@ -468,21 +480,6 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 						exit(EXIT_FAILURE);
 					}
 					
-					// Try to get stats of the directory
-					if (fstat(client->dirfd, &statbuf) < 0)
-					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot fstat %s: %s\n", getpid(), pathname, strerror(errno));
-						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-						exit(EXIT_FAILURE);
-					}
-					
-					// If it isn't world readable or a world executable we're done
-					if (!(statbuf.st_mode & S_IROTH) || !(statbuf.st_mode & S_IXOTH))
-					{
-						dprintf(client->socket, ERROR_FORMAT, ERROR_FORBIDDEN);
-						exit(EXIT_FAILURE);
-					}
-					
 					// Command is whatever is after the slash
 					command = filename_slash + 1;
 				}
@@ -496,6 +493,26 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 				if (fchdir(client->dirfd) < 0)
 				{
 					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %s\n", getpid(), strerror(errno));
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
+					exit(EXIT_FAILURE);
+				}
+				
+				// Reset signal mask
+				sigset_t mask;
+				
+				sigemptyset(&mask);
+				
+				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
+				{
+					fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %s\n", getpid(), strerror(errno));
+					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
+					exit(EXIT_FAILURE);
+				}
+				
+				// Replace the fork's stdout FD with the socket FD
+				if (dup2(client->socket, STDOUT_FILENO) < 0)
+				{
+					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
@@ -533,15 +550,7 @@ static void client_socket(unsigned int events, union sepoll_arg_t userdata1, uni
 					NULL
 				};
 				
-				// Replace the fork's stdout FD with the socket FD
-				if (dup2(client->socket, STDOUT_FILENO) < 0)
-				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
-					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-					exit(EXIT_FAILURE);
-				}
-				
-				// dup makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
+				// dup here makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
 				fexecve(dup(client->file), argv, envp);
 				
 				// This is only reached if there was a problem with fexecve
@@ -855,9 +864,9 @@ static int setupsignals()
 }
 
 // *********************************************************************
-// Set the process open fd limit to the maximum allowed
+// Set the process open fd limit to what is needed given user limit
 // *********************************************************************
-static int maxfdlimit()
+static int increasefdlimit(unsigned int maxClients)
 {
 	struct rlimit limit;
 	
@@ -867,7 +876,23 @@ static int maxfdlimit()
 		return -1;
 	}
 	
-	limit.rlim_cur = limit.rlim_max;
+	rlim_t cur = limit.rlim_cur;
+	rlim_t max = limit.rlim_max;
+	
+	rlim_t inc = FDS_SERVER + maxClients * FDS_CLIENT;
+	
+	if (inc < cur)
+	{
+		return 0;
+	}
+	
+	if (inc > max)
+	{
+		fprintf(stderr, "%i - Error: Process maximum FD limit too low to occomodate desired maximum number of clients\n", getpid());
+		return -1;
+	}
+	
+	limit.rlim_cur = inc;
 	
 	if (setrlimit(RLIMIT_NOFILE, &limit) < 0)
 	{
@@ -1129,8 +1154,8 @@ void server_process(struct server_params_t* params)
 		exit(EXIT_FAILURE);
 	}
 	
-	// Max out open file descriptor limit
-	if (maxfdlimit() < 0)
+	// Increase open file descriptor limit if needed
+	if (increasefdlimit(params->maxClients) < 0)
 	{
 		exit(EXIT_FAILURE);
 	}

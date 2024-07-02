@@ -3,18 +3,22 @@ Gopher server for Linux
 
 sgopher is my personal attempt at a Gopher protocol server that is capable of a high rate of throughput for many concurrent users. The package also contains gophertester, a benchmarker for Gopher servers that I made for testing purposes, and gopherlist, a CGI-like program that produces a directory listing.
 
+Requires Linux kernel 5.5 or greater and glibc.
+
 ## Configuration
 sgopher is configured entirely with command line options. It accepts the following options:
 
 -d, --directory=STRING     Location to serve files from (default ./gopherroot)  
 -h, --hostname=STRING      Externally-accessible hostname of server, used for generation of gophermaps (default localhost)  
 -i, --indexfile=STRING     Default file to serve from a blank path or path referencing a directory (default .gophermap)  
--m, --maxclients=NUMBER    Maximum simultaneous clients per worker process (default 4096 clients)  
+-m, --maxclients=NUMBER    Maximum simultaneous clients per worker process (default 1000 clients)  
 -p, --port=NUMBER          Network port (default port 70)  
 -t, --timeout=NUMBER       Time in seconds before booting inactive client (default 10 seconds)  
 -w, --workers=NUMBER       Number of worker processes (default 1 worker)
 
-sgopher must be run as a user with permission to bind a socket to ports below 1024, or else a custom high port number must be used. It currently contains no provisions for access logging or throttling. Errors are reported via stderr.
+sgopher currently contains no provisions for access logging or throttling. Errors are reported via stderr.
+
+The default maximum number of clients per process is set possibly higher than the number of concurrent Gopher users across the whole world. The number is fairly arbitrary; no significant resources are consumed if this number is higher than necessary - only 12 bytes per potential client as part of the event system. Additionally at startup, sgopher worker processes request an increase to the maximum number of open file descriptors if necessary to accommodate the maximum number of clients; it requires potentially up to 4 additional file descriptors per connected client.
 
 When SIGTERM is sent to sgopher's main process, it will send SIGTERM to each of its children and wait for them to exit before exiting itself. This is intended to be the correct way to gracefully terminate sgopher. However, terminating it via SIGKILL or SIGINT via ctrl+c in the console does not cause any issues.
 
@@ -81,20 +85,17 @@ gopherlist does not necessarily need to be the default gophermap of a directory.
 
 If invoked with a query string, it will display only those files with names that contain the provided query as a substring.
 
-## sgopher Technical Ramblings
-sgopher makes use of Linux-specific features whereever that would reduce the number of system calls or allow the logic to be more simple. Examples include the use of accept4 in place of accept and a pair of setsockopt calls to obtain a non-blocking, close-on-exec client socket, or the use of a Linux-specific variant of fork that returns a pidfd instead of using separate fork and pidfd_open calls. It also uses more mundane Linux-isms like an epoll-based event loop with timerfds and signalfds mixed in with the sockets, and sendfile to transfer files without userspace buffers.
+## Security
 
-Version 5.4 or so of the Linux kernel is needed for sgopher to function, mainly due to pidfd functionality being added in the Linux 5 series.
+In order to use the default port of 70 for the Gopher protocol, sgopher must be run as root (NOT recommended!) or the executable itself must be granted the capability to use ports below 1024. Use  
 
-In addition to having a fairly efficient epoll-based event loop with edge-triggered, non-blocking sockets that is limited by the speed of gigabit ethernet rather than CPU time in my test cases, sgopher can fork off additional worker proceses for even greater concurrency if you can find enough Gopher users on the entire planet for this to be necessary. It makes use of address and port reuse on the listening socket, allowing workers to be blissfully unaware of each other as the kernel loadbalances incoming connections between them. This also means that a bad actor listening on the same port could theoretically hijack some requests, but root privileges (or better yet, granting CAP_NET_BIND_SERVICE to sgopher so it can be run as an unprivileged user) are required for binding to Gopher's port 70 so this isn't likely to be an issue - or at least not be worse than a bad actor having root privilieges! Since the load balancing happens in the kernel and processes are only woken up if they are selected to handle a given client, there's no "thundering herd" problem, either.
+sudo setcap cap_net_bind_service=ep ./sgopher
 
-As I am an amateur I make no security guarantees. However, wherever possible I attempted to prevent malformed or malicious requests from opening files outside of the serving directory. sgopher opens the serving directory and opens all files using openat relative to that directory after screening and processing incoming selector strings to ensure that the string contains no path elements that begin with a period and is in itself relative to the serving directory. This should prevent access to higher-level directories and also prevents access to hidden files, which is a side effect but not really an unwanted one.
+to do this. Additionally, ensure that sgopher is not world-executable so that unauthorized users can't run copies of their own on the same port, which would "hijack" a portion of the incoming connections. This is because to support multi-process handling of incoming connections, the workker processes enable port and address reuse on the listening port. This causes the kernel to distribute incoming connections evenly between sgopher processes, including potential "rogue" processes.
 
-Once a final path is obtained, the file is opened and its attributes inspected. It must be world readable and a regular file or a directory to be served. If it is a directory, it must be world-executable, and a further openat call is used to attempt to open a gophermap file within that directory. Once a final file is obtained, if it is not executable it is transferred to the client using sendfile as often as possible until it completes. The time function is used to obtain a simple timestamp for the last successful interaction with a client, which is used to periodically check for inactivity every time the server's timerfd ticks.
+sgopher inspects selector strings provided by clients and rejects the client if any path components begin with ., which is intended to prevent use of relative paths to escape the serving directory. It also has the side-effect of preventing access to hidden files. Default gophermaps are not subject to this restriction, and in fact are hidden files by default. Selectors may begin with a / or not, and in either case are rebuilt as a relative path to prevent access outside of the server directory.
 
-If the file is executable, the server forks, dup2s the client's socket over stdout, sets up CGI-like environment variables, and executes the file using fexecve. The server obtains a pidfd refering to this process and monitors it for completion. Because the server has no real idea of what the CGI program is doing, it can't check for timeout via timestamps as it can for regular file transfers. Instead, the server watches the socket attached to the process for inactivity and will disconnect the client if an outgoing message hasn't happened recently enough, indicating either a problem with the program or the client. This is achieved by periodically calling getsockopt on the client's socket with the TCP_INFO to get a tcp_info structure and checking the tcpi_last_data_sent field.
+The permissions of the user sgopher is run by are used to determine access to files. Files must be readable and directories must be searchable, or else sgopher returns a forbidden error to the client. Files to be executed as CGI must be world executable, not simply executable by the server process' user.
 
-I originally made use of io_uring to batch epoll_ctl and close calls, but I wasn't certain how much that was really helping for the complexity it added so I removed it. Plus I figured that if I was going to use io_uring I may as well go all the way instead of using it for just a couple of relatively minor things. The old code can be seen in the two sepoll_batched files. I believe Linux version 5.10 or so is needed for all the io_uring functionality.
-
-## Security Disclaimer
+## Disclaimer
 I currently cannot vouch that sgopher is completely secure, so expose it to the Internet at your own risk!

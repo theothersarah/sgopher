@@ -77,7 +77,7 @@ static struct argp_option argp_options[] =
 	{"directory",	KEY_DIRECTORY,	"STRING",	0,	"Location to serve files from (default ./gopherroot)"},
 	{"hostname",	KEY_HOSTNAME,	"STRING",	0,	"Externally-accessible hostname of server, used for generation of gophermaps (default localhost)"},
 	{"indexfile",	KEY_INDEXFILE,	"STRING",	0,	"Default file to serve from a blank path or path referencing a directory (default .gophermap)"},
-	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process (default 4096 clients)"},
+	{"maxclients",	KEY_MAXCLIENTS,	"NUMBER",	0,	"Maximum simultaneous clients per worker process (default 1000 clients)"},
 	{"port",		KEY_PORT,		"NUMBER",	0,	"Network port (default port 70)"},
 	{"timeout",		KEY_TIMEOUT,	"NUMBER",	0,	"Time in seconds before booting inactive client (default 10 seconds)"},
 	{"workers",		KEY_WORKERS,	"NUMBER",	0,	"Number of worker processes (default 1 worker)"},
@@ -284,7 +284,7 @@ int main(int argc, char* argv[])
 		.directory = "./gopherroot",
 		.hostname = "localhost",
 		.indexfile = ".gophermap",
-		.maxClients = 4096,
+		.maxClients = 1000,
 		.port = 70,
 		.timeout = 10,
 		.numWorkers = 1
