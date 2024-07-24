@@ -146,7 +146,6 @@ static int compare_strings(const void* pa, const void* pb)
 // Not comprehensive but at least an assortment of common and period-accurate stuff
 // This must be pre-sorted according to strcmp rules for bsearch
 // Default for a non-executable, non-directory file is 9 so anything of that type should not be here
-
 struct ext_entry_t
 {
 	const char* ext;
@@ -193,8 +192,6 @@ int main()
 		.size = 0,
 		.count = 0
 	};
-	
-	on_exit(cleanup_realloc, &filenamelist.filenames);
 	
 	// Get the key environment variables we need
 	// It's fine if they are null, too, although it would generate a non-functional menu
@@ -244,6 +241,8 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 	
+	on_exit(cleanup_realloc, &filenamelist.filenames);
+	
 	// Open a directory stream for the working directory
 	DIR* directory = opendir(".");
 	
@@ -291,14 +290,16 @@ int main()
 		{
 			filenamelist.size *= 2;
 			
-			filenamelist.filenames = reallocarray(filenamelist.filenames, filenamelist.size, sizeof(char*));
+			void* resized = reallocarray(filenamelist.filenames, filenamelist.size, sizeof(char*));
 			
-			if (filenamelist.filenames == NULL)
+			if (resized == NULL)
 			{
 				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
 				closedir(directory);
 				exit(EXIT_FAILURE);
 			}
+			
+			filenamelist.filenames = resized;
 		}
 	}
 	
