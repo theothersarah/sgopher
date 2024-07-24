@@ -1,4 +1,4 @@
-// for memrchr, strcasestr
+// for memrchr, strcasestr, strdupa
 #define _GNU_SOURCE
 
 // opendir, readdir, closedir
@@ -13,7 +13,7 @@
 // on_exit, exit, getenv, calloc, reallocarray, free, qsort, bsearch
 #include <stdlib.h>
 
-// strerror, strdup, strlen, strrchr, strcmp, memrchr, strcasestr
+// strerror, strdupa, strlen, strrchr, strcmp, memrchr, strcasestr
 #include <string.h>
 
 // stat
@@ -114,7 +114,7 @@ void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
 	}
 }
 
-// List of filenames and a cleanup function for it
+// List of filenames
 struct filenamelist_t
 {
 	// Array of filenames
@@ -127,19 +127,13 @@ struct filenamelist_t
 	size_t count;
 };
 
-static void filenamelist_cleanup(int code, void* arg)
+// on_exit cleanup function for malloc with support for realloc
+// Takes a pointer to the pointer since realloc may change the value of it
+static void cleanup_realloc(int code, void* arg)
 {
-	struct filenamelist_t* filenamelist = arg;
+	void** ptr = arg;
 	
-	if (filenamelist->filenames != NULL)
-	{
-		for (size_t i = 0; i < filenamelist->count; i++)
-		{
-			free(filenamelist->filenames[i]);
-		}
-		
-		free(filenamelist->filenames);
-	}
+	free(*ptr);
 }
 
 // Comparison function for filename list
@@ -200,7 +194,7 @@ int main()
 		.count = 0
 	};
 	
-	on_exit(filenamelist_cleanup, &filenamelist);
+	on_exit(cleanup_realloc, &filenamelist.filenames);
 	
 	// Get the key environment variables we need
 	// It's fine if they are null, too, although it would generate a non-functional menu
@@ -279,8 +273,8 @@ int main()
 			}
 		}
 		
-		// Make a copy of the filename (+1 to make room for the null terminator)
-		char* filename = strdup(entry->d_name);
+		// Make a copy of the filename
+		char* filename = strdupa(entry->d_name);
 		
 		if (filename == NULL)
 		{
