@@ -7,6 +7,9 @@
 // errno
 #include <errno.h>
 
+// poll
+#include <poll.h>
+
 // snprintf, fprintf
 #include <stdio.h>
 
@@ -61,7 +64,7 @@ void snbuffer_flush(struct snbuffer_t* snbuffer)
 	
 	if (count > 0)
 	{
-		// Potentially requires multiple writes especially if the FD is a socket
+		// Potentially requires multiple writes especially if the FD is a socket, pipe, etc.
 		char* from = snbuffer->base;
 		
 		do
@@ -70,8 +73,27 @@ void snbuffer_flush(struct snbuffer_t* snbuffer)
 			
 			if (n < 0)
 			{
-				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
-				exit(EXIT_FAILURE);
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				{
+					// If socket is non-blocking and would block, poll it before trying again
+					struct pollfd fdpoll =
+					{
+						.fd = snbuffer->fd,
+						.events = POLLOUT
+					};
+					
+					// Infinite timeout is acceptable because server will kill process if it takes too long
+					if (poll(&fdpoll, 1, -1) < 0)
+					{
+						fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %s\n", getpid(), strerror(errno));
+						exit(EXIT_FAILURE);
+					}
+				}
+				else
+				{
+					fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
+					exit(EXIT_FAILURE);
+				}
 			}
 			
 			count -= (size_t)n;
@@ -185,14 +207,6 @@ static int compare_ext_entry(const void* pa, const void* pb)
 // Main function
 int main()
 {
-	// List of filenames which must be freed on exit
-	struct filenamelist_t filenamelist =
-	{
-		.filenames = NULL,
-		.size = 0,
-		.count = 0
-	};
-	
 	// Get the key environment variables we need
 	// It's fine if they are null, too, although it would generate a non-functional menu
 	char* env_selector = getenv("SCRIPT_NAME");
@@ -231,9 +245,12 @@ int main()
 	}
 	
 	// Allocate a list of filenames with a starter size that may be expanded later if needed
-	filenamelist.size = NUM_FILENAMES;
-	
-	filenamelist.filenames = calloc(filenamelist.size, sizeof(char*));
+	struct filenamelist_t filenamelist =
+	{
+		.filenames = calloc(NUM_FILENAMES, sizeof(char*)),
+		.size = NUM_FILENAMES,
+		.count = 0
+	};
 	
 	if (filenamelist.filenames == NULL)
 	{
