@@ -1,7 +1,7 @@
 // for memrchr, strcasestr, strdupa
 #define _GNU_SOURCE
 
-// opendir, readdir, closedir
+// opendir, readdir
 #include <dirent.h>
 
 // errno
@@ -13,7 +13,7 @@
 // snprintf, fprintf
 #include <stdio.h>
 
-// on_exit, exit, getenv, calloc, reallocarray, free, qsort, bsearch
+// exit, getenv, calloc, reallocarray, qsort, bsearch
 #include <stdlib.h>
 
 // strerror, strdupa, strlen, strrchr, strcmp, memrchr, strcasestr
@@ -58,56 +58,59 @@ static inline void snbuffer_setup(struct snbuffer_t* snbuffer, int fd, char* bas
 	snbuffer->size = len;
 }
 
-void snbuffer_flush(struct snbuffer_t* snbuffer)
+static void snbuffer_flush(struct snbuffer_t* snbuffer)
 {
+	// Figure out if there's anything in the buffer
 	size_t count = (size_t)(snbuffer->pos - snbuffer->base);
 	
-	if (count > 0)
+	if (count == 0)
 	{
-		// Potentially requires multiple writes especially if the FD is a socket, pipe, etc.
-		char* from = snbuffer->base;
+		return;
+	}
+	
+	// Potentially requires multiple writes especially if the FD is a socket, pipe, etc.
+	char* src = snbuffer->base;
+	
+	do
+	{
+		ssize_t n = write(snbuffer->fd, src, count);
 		
-		do
+		if (n < 0)
 		{
-			ssize_t n = write(snbuffer->fd, from, count);
-			
-			if (n < 0)
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
 			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				// If the FD is non-blocking and would block, poll it before trying again
+				struct pollfd fds =
 				{
-					// If socket is non-blocking and would block, poll it before trying again
-					struct pollfd fdpoll =
-					{
-						.fd = snbuffer->fd,
-						.events = POLLOUT
-					};
-					
-					// Infinite timeout is acceptable because server will kill process if it takes too long
-					if (poll(&fdpoll, 1, -1) < 0)
-					{
-						fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %s\n", getpid(), strerror(errno));
-						exit(EXIT_FAILURE);
-					}
-				}
-				else
+					.fd = snbuffer->fd,
+					.events = POLLOUT
+				};
+				
+				// Infinite timeout is acceptable because the server will kill the process if it takes too long
+				if (poll(&fds, 1, -1) < 0)
 				{
-					fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %s\n", getpid(), strerror(errno));
 					exit(EXIT_FAILURE);
 				}
 			}
-			
-			count -= (size_t)n;
-			from += n;
+			else
+			{
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
+				exit(EXIT_FAILURE);
+			}
 		}
-		while(count > 0);
 		
-		// Reset buffer
-		snbuffer->pos = snbuffer->base;
-		snbuffer->size = snbuffer->len;
+		count -= (size_t)n;
+		src += n;
 	}
+	while(count > 0);
+	
+	// Reset buffer
+	snbuffer->pos = snbuffer->base;
+	snbuffer->size = snbuffer->len;
 }
 
-void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
+static void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
 {
 	if (size > 0)
 	{
@@ -148,15 +151,6 @@ struct filenamelist_t
 	// Number of filenames present in array
 	size_t count;
 };
-
-// on_exit cleanup function for malloc with support for realloc
-// Takes a pointer to the pointer since realloc may change the value of it
-static void cleanup_realloc(int code, void* arg)
-{
-	void** ptr = arg;
-	
-	free(*ptr);
-}
 
 // Comparison function for filename list
 static int compare_strings(const void* pa, const void* pb)
@@ -258,8 +252,6 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 	
-	on_exit(cleanup_realloc, &filenamelist.filenames);
-	
 	// Open a directory stream for the working directory
 	DIR* directory = opendir(".");
 	
@@ -295,7 +287,6 @@ int main()
 		if (filename == NULL)
 		{
 			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
-			closedir(directory);
 			exit(EXIT_FAILURE);
 		}
 		
@@ -312,15 +303,12 @@ int main()
 			if (resized == NULL)
 			{
 				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
-				closedir(directory);
 				exit(EXIT_FAILURE);
 			}
 			
 			filenamelist.filenames = resized;
 		}
 	}
-	
-	closedir(directory);
 	
 	// Sort the list of filenames
 	qsort(filenamelist.filenames, filenamelist.count, sizeof(char*), compare_strings);
@@ -363,15 +351,9 @@ int main()
 			exit(EXIT_FAILURE);
 		}
 		
-		// Make sure it's world readable
-		if (!(statbuf.st_mode & S_IROTH))
-		{
-			continue;
-		}
-		
 		char type;
 		
-		// Make sure it's a regular file, or a directory that is world executable
+		// Make sure it's a regular file, or a directory
 		if (S_ISREG(statbuf.st_mode))
 		{
 			// Determine if it's executable or not
@@ -409,7 +391,7 @@ int main()
 				}
 			}
 		}
-		else if (S_ISDIR(statbuf.st_mode) && statbuf.st_mode & S_IXOTH)
+		else if (S_ISDIR(statbuf.st_mode))
 		{
 			// Treat directories as being submenus
 			// You did put a gophermap in it, right?
