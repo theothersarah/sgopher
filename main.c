@@ -19,9 +19,6 @@
 // exit, on_exit, malloc, calloc, free
 #include <stdlib.h>
 
-// strerror
-#include <string.h>
-
 // pidfd_send_signal
 #include <sys/pidfd.h>
 
@@ -157,7 +154,7 @@ static void signal_all_workers(struct supervisor_t* supervisor, int sig, bool cl
 		{
 			if (pidfd_send_signal(supervisor->workers[i].pidfd, sig, NULL, 0) < 0)
 			{
-				fprintf(stderr, "S - Error: Cannot send signal to child via pidfd: %s\n", strerror(errno));
+				fprintf(stderr, "S - Error: Cannot send signal to child via pidfd: %m\n");
 			}
 			
 			if (close_pidfd)
@@ -187,7 +184,7 @@ static void sigfd_event(uint32_t events, union sepoll_arg_t userdata1, union sep
 			}
 			else
 			{
-				fprintf(stderr, "S - Error: Cannot read from signalfd: %s\n", strerror(errno));
+				fprintf(stderr, "S - Error: Cannot read from signalfd: %m\n");
 				return;
 			}
 		}
@@ -217,7 +214,7 @@ static void pidfd_event(uint32_t events, union sepoll_arg_t userdata1, union sep
 	
 	if (waitid(P_PIDFD, (id_t)worker->pidfd, &siginfo, WEXITED) < 0)
 	{
-		fprintf(stderr, "S - Worker PID %i exited but waitid failed: %s\n", worker->pid, strerror(errno));
+		fprintf(stderr, "S - Worker PID %i exited but waitid failed: %m\n", worker->pid);
 	}
 	else
 	{
@@ -319,20 +316,20 @@ int main(int argc, char* argv[])
 	
 	if (devnull < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot open /dev/null: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot open /dev/null: %m\n");
 		exit(EXIT_FAILURE);
 	}
 	
 	if (dup2(devnull, STDIN_FILENO) < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdin: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdin: %m\n");
 		close(devnull);
 		exit(EXIT_FAILURE);
 	}
 	
 	if (dup2(devnull, STDOUT_FILENO) < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdout: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot dup2 /dev/null over stdout: %m\n");
 		close(devnull);
 		exit(EXIT_FAILURE);
 	}
@@ -344,7 +341,7 @@ int main(int argc, char* argv[])
 	
 	if (supervisor == NULL)
 	{
-		fprintf(stderr, "S - Error: Cannot allocate memory for supervisor: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot allocate memory for supervisor: %m\n");
 		exit(EXIT_FAILURE);
 	}
 	
@@ -358,7 +355,7 @@ int main(int argc, char* argv[])
 	
 	if (supervisor->workers == NULL)
 	{
-		fprintf(stderr, "S - Error: Cannot allocate memory for workers: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot allocate memory for workers: %m\n");
 		free(supervisor);
 		exit(EXIT_FAILURE);
 	}
@@ -387,7 +384,7 @@ int main(int argc, char* argv[])
 		}
 		else if (pid < 0) // Error
 		{
-			fprintf(stderr, "S - Error: Cannot fork worker process %u - %s\n", i, strerror(errno));
+			fprintf(stderr, "S - Error: Cannot fork worker process %u - %m\n", i);
 		}
 		else // Parent
 		{
@@ -428,7 +425,7 @@ int main(int argc, char* argv[])
 	
 	if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot block signals: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot block signals: %m\n");
 		exit(EXIT_FAILURE);
 	}
 	
@@ -436,7 +433,7 @@ int main(int argc, char* argv[])
 	
 	if (supervisor->sigfd < 0)
 	{
-		fprintf(stderr, "S - Error: Cannot open signalfd: %s\n", strerror(errno));
+		fprintf(stderr, "S - Error: Cannot open signalfd: %m\n");
 		exit(EXIT_FAILURE);
 	}
 	

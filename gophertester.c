@@ -14,13 +14,16 @@
 // poll
 #include <poll.h>
 
+// bool
+#include <stdbool.h>
+
 // sscanf, printf, fprintf
 #include <stdio.h>
 
 // malloc, free, on_exit, exit
 #include <stdlib.h>
 
-// strerror, strlen
+// strlen
 #include <string.h>
 
 // socket, connect
@@ -178,7 +181,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	
 	if (buf == NULL)
 	{
-		fprintf(stderr, "Error: Worker #%u cannot allocate receive buffer: %s\n", id, strerror(errno));
+		fprintf(stderr, "Error: Worker #%u cannot allocate receive buffer: %m\n", id);
 		exit(EXIT_FAILURE);
 	}
 	
@@ -232,13 +235,13 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	
 	if (timerfd < 0)
 	{
-		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %s\n", id, strerror(errno));
+		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %m\n", id);
 		exit(EXIT_FAILURE);
 	}
 	
 	if (timerfd_settime(timerfd, 0, &timer, NULL) < 0)
 	{
-		fprintf(stderr, "Error: Worker #%u cannot set timerfd time: %s\n", id, strerror(errno));
+		fprintf(stderr, "Error: Worker #%u cannot set timerfd time: %m\n", id);
 		close(timerfd);
 		exit(EXIT_FAILURE);
 	}
@@ -249,7 +252,9 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	poll_list[0].fd = timerfd;
 	poll_list[0].events = POLLIN;
 	
-	while (1)
+	bool running = true;
+	
+	while (running)
 	{
 		// Score an attempt
 		results->total++;
@@ -262,7 +267,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 		
 		if (sockfd < 0)
 		{
-			fprintf(stderr, "Error: Worker #%u cannot open socket: %s\n", id, strerror(errno));
+			fprintf(stderr, "Error: Worker #%u cannot open socket: %m\n", id);
 			close(timerfd);
 			exit(EXIT_FAILURE);
 		}
@@ -273,8 +278,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 			// The socket is nonblocking so it should return EINPROGRESS
 			if (errno != EINPROGRESS)
 			{
-				fprintf(stderr, "Error: Worker #%u cannot connect to server: %s\n", id, strerror(errno));
-				close(sockfd);
+				fprintf(stderr, "Error: Worker #%u cannot connect to server: %m\n", id);
 				close(timerfd);
 				exit(EXIT_FAILURE);
 			}
@@ -284,14 +288,16 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 		poll_list[1].fd = sockfd;
 		poll_list[1].events = POLLOUT;
 		
-		while (1)
+		bool connected = true;
+		
+		while (connected)
 		{
 			// Wait on the socket and timer FDs
 			int n = poll(poll_list, 2, args->timeout);
 			
 			if (n < 0)
 			{
-				fprintf(stderr, "Error: Worker #%u cannot poll FDs: %s\n", id, strerror(errno));
+				fprintf(stderr, "Error: Worker #%u cannot poll FDs: %m\n", id);
 				close(sockfd);
 				close(timerfd);
 				exit(EXIT_FAILURE);
@@ -312,6 +318,8 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 			// If timerfd ticks, we're done after the next completion or timeout
 			if (poll_list[0].revents & POLLIN)
 			{
+				running = false;
+				
 				// This causes the timer FD entry in the poll list to be ignored by subsequent calls to poll
 				poll_list[0].fd = -1;
 			}
@@ -324,7 +332,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 				
 				if (n < 0)
 				{
-					fprintf(stderr, "Error: Worker #%u cannot write to socket: %s\n", id, strerror(errno));
+					fprintf(stderr, "Error: Worker #%u cannot write to socket: %m\n", id);
 					close(sockfd);
 					close(timerfd);
 					exit(EXIT_FAILURE);
@@ -357,7 +365,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 						}
 						else
 						{
-							fprintf(stderr, "Error: Worker #%u cannot read socket: %s\n", id, strerror(errno));
+							fprintf(stderr, "Error: Worker #%u cannot read socket: %m\n", id);
 							close(sockfd);
 							close(timerfd);
 							exit(EXIT_FAILURE);
@@ -365,7 +373,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 					}
 					else if (n == 0)
 					{
-						// End of file means we figure out what to score and then do a double-break to repeat everything all over again
+						// End of file means we figure out what to score
 						if (args->size > 0 && received != args->size)
 						{
 							// Report a size mismatch only the first time it happens and then score it
@@ -382,32 +390,21 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 							results->successful++;
 						}
 						
-						// This has no relevance to poll itself, it's just used as a convenient way to pass on that we need to do a second break in a moment
-						poll_list[1].events = 0;
+						// 
+						connected = false;
 						
 						break;
 					}
 					
 					received += n;
 				}
-				
-				// Here's the second break
-				if (poll_list[1].events == 0)
-				{
-					break;
-				}
 			}
 		}
 		
 		close(sockfd);
-		
-		// If the timerfd ticked, we're done
-		if (poll_list[0].fd < 0)
-		{
-			close(timerfd);
-			break;
-		}
 	}
+	
+	close(timerfd);
 	
 	exit(EXIT_SUCCESS);
 }
@@ -451,7 +448,7 @@ int main(int argc, char* argv[])
 	
 	if (workers == NULL)
 	{
-		fprintf(stderr, "Error: Cannot allocate shared memory for results: %s\n", strerror(errno));
+		fprintf(stderr, "Error: Cannot allocate shared memory for results: %m\n");
 		exit(EXIT_FAILURE);
 	}
 	
@@ -482,7 +479,7 @@ int main(int argc, char* argv[])
 		}
 		else if (pid < 0) // Error
 		{
-			fprintf(stderr, "Error: Cannot fork worker process #%u: %s\n", i, strerror(errno));
+			fprintf(stderr, "Error: Cannot fork worker process #%u: %m\n", i);
 		}
 		else // Parent
 		{

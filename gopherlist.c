@@ -16,7 +16,7 @@
 // exit, getenv, calloc, reallocarray, qsort, bsearch
 #include <stdlib.h>
 
-// strerror, strdupa, strlen, strrchr, strcmp, memrchr, strcasestr
+// strdupa, strlen, strrchr, strcmp, memrchr, strcasestr
 #include <string.h>
 
 // stat
@@ -89,13 +89,13 @@ static void snbuffer_flush(struct snbuffer_t* snbuffer)
 				// Infinite timeout is acceptable because the server will kill the process if it takes too long
 				if (poll(&fds, 1, -1) < 0)
 				{
-					fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %m\n", getpid());
 					exit(EXIT_FAILURE);
 				}
 			}
 			else
 			{
-				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %m\n", getpid());
 				exit(EXIT_FAILURE);
 			}
 		}
@@ -128,7 +128,7 @@ static void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size
 	}
 	else if (size < 0)
 	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot snprintf: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot snprintf: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
 	
@@ -248,7 +248,7 @@ int main()
 	
 	if (filenamelist.filenames == NULL)
 	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename list: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename list: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
 	
@@ -257,7 +257,7 @@ int main()
 	
 	if (directory == NULL)
 	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot opendir: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i (gopherlist) - Error: Cannot opendir: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
 	
@@ -286,7 +286,7 @@ int main()
 		
 		if (filename == NULL)
 		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %s\n", getpid(), strerror(errno));
+			fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename: %m\n", getpid());
 			exit(EXIT_FAILURE);
 		}
 		
@@ -302,7 +302,7 @@ int main()
 			
 			if (resized == NULL)
 			{
-				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i (gopherlist) - Error: Cannot reallocate memory for filenames: %m\n", getpid());
 				exit(EXIT_FAILURE);
 			}
 			
@@ -347,7 +347,7 @@ int main()
 		
 		if (stat(filename, &statbuf) < 0)
 		{
-			fprintf(stderr, "%i (gopherlist) - Error: Cannot stat %s: %s\n", getpid(), filename, strerror(errno));
+			fprintf(stderr, "%i (gopherlist) - Error: Cannot stat %s: %m\n", getpid(), filename);
 			exit(EXIT_FAILURE);
 		}
 		

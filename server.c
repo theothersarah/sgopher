@@ -21,7 +21,7 @@
 // malloc, free, on_exit, exit
 #include <stdlib.h>
 
-// strerror, memchr, memmem, stpcpy, mempcpy, strrchr
+// memchr, memmem, stpcpy, mempcpy, strrchr
 #include <string.h>
 
 // pidfd_send_signal
@@ -190,7 +190,7 @@ static inline void pidfd_kill_client(struct server_t* server, struct client_t* c
 	{
 		// This shouldn't fail undless something is deeply wrong
 		// In the event that it does, boot the client and pray for the best
-		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %m\n", getpid());
 		
 		client_disconnect(server, client);
 	}
@@ -236,7 +236,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				}
 				else
 				{
-					fprintf(stderr, "%i - Error: Cannot read from client: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i - Error: Cannot read from client: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					client_disconnect(server, client);
 					return;
@@ -358,7 +358,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			}
 			else
 			{
-				fprintf(stderr, "%i - Error: Cannot open file %s: %s\n", getpid(), filename, strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot open file %s: %m\n", getpid(), filename);
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 			}
 			
@@ -371,7 +371,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 		
 		if (fstat(client->file, &statbuf) < 0)
 		{
-			fprintf(stderr, "%i - Error: Cannot fstat file %s: %s\n", getpid(), filename, strerror(errno));
+			fprintf(stderr, "%i - Error: Cannot fstat file %s: %m\n", getpid(), filename);
 			dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 			client_disconnect(server, client);
 			return;
@@ -404,7 +404,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				}
 				else
 				{
-					fprintf(stderr, "%i - Error: Cannot open file %s in directory %s: %s\n", getpid(), server->params->indexfile, filename, strerror(errno));
+					fprintf(stderr, "%i - Error: Cannot open file %s in directory %s: %m\n", getpid(), server->params->indexfile, filename);
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				}
 				
@@ -415,7 +415,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			// Now we need the stats of the index file
 			if (fstat(client->file, &statbuf) < 0)
 			{
-				fprintf(stderr, "%i - Error: Cannot fstat file %s in directory %s: %s\n", getpid(), server->params->indexfile, filename, strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot fstat file %s in directory %s: %m\n", getpid(), server->params->indexfile, filename);
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
@@ -475,7 +475,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 					
 					if (client->dirfd < 0)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %s\n", getpid(), pathname, strerror(errno));
+						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %m\n", getpid(), pathname);
 						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 						exit(EXIT_FAILURE);
 					}
@@ -492,7 +492,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				// Change working directory to the location of the executable file
 				if (fchdir(client->dirfd) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
@@ -504,7 +504,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				
 				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
@@ -512,7 +512,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				// Replace the fork's stdout FD with the socket FD
 				if (dup2(client->socket, STDOUT_FILENO) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 					exit(EXIT_FAILURE);
 				}
@@ -554,13 +554,13 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				fexecve(dup(client->file), argv, envp);
 				
 				// This is only reached if there was a problem with fexecve
-				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %s\n", getpid(), filename, strerror(errno));
+				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %m\n", getpid(), filename);
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				exit(EXIT_FAILURE);
 			}
 			else if (pid < 0)
 			{
-				fprintf(stderr, "%i - Error: Cannot fork CGI process: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot fork CGI process: %m\n", getpid());
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
 				client_disconnect(server, client);
 				return;
@@ -610,7 +610,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				else if (errno != EPIPE)
 				{
 					// Don't bother reporting it if it's a broken pipe because that had nothing to do with us
-					fprintf(stderr, "%i - Error: Problem sending file to client: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i - Error: Problem sending file to client: %m\n", getpid());
 					
 					// Only send the error message if none of the file has been sent yet
 					if (client->sentsize == 0)
@@ -676,7 +676,7 @@ static void server_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				}
 				else
 				{
-					fprintf(stderr, "%i - Error: Cannot accept incoming connection: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i - Error: Cannot accept incoming connection: %m\n", getpid());
 					return;
 				}
 			}
@@ -695,7 +695,7 @@ static void server_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			
 			if (client == NULL)
 			{
-				fprintf(stderr, "%i - Error: Cannot allocate memory for new client: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot allocate memory for new client: %m\n", getpid());
 				dprintf(fd, ERROR_FORMAT, ERROR_INTERNAL);
 				close(fd);
 				continue;
@@ -750,7 +750,7 @@ static void server_signal(uint32_t events, union sepoll_arg_t userdata1, union s
 			}
 			else
 			{
-				fprintf(stderr, "%i - Error: Cannot read from signalfd: %s\n", getpid(), strerror(errno));
+				fprintf(stderr, "%i - Error: Cannot read from signalfd: %m\n", getpid());
 				return;
 			}
 		}
@@ -777,7 +777,7 @@ static void server_timer(uint32_t events, union sepoll_arg_t userdata1, union se
 	
 	if (read(server->timerfd, &buffer, sizeof(uint64_t)) != sizeof(uint64_t))
 	{
-		fprintf(stderr, "%i - Error: Cannot read from timerfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot read from timerfd: %m\n", getpid());
 	}
 	
 	// Check for connection timeout
@@ -802,7 +802,7 @@ static void server_timer(uint32_t events, union sepoll_arg_t userdata1, union se
 				
 				if (retval < 0)
 				{
-					fprintf(stderr, "%i - Error: Cannot get TCP information from socket: %s\n", getpid(), strerror(errno));
+					fprintf(stderr, "%i - Error: Cannot get TCP information from socket: %m\n", getpid());
 				}
 				
 				// Kill the child process if it hasn't used the socket for at least one timeout period
@@ -836,7 +836,7 @@ static int setupsignals()
 	// We want to get SIGTERM if the parent dies
 	if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot set signal to receive on parent death: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot set signal to receive on parent death: %m\n", getpid());
 		return -1;
 	}
 	
@@ -849,14 +849,14 @@ static int setupsignals()
 	// We want to ignore SIGCHLD because we don't care about child exit codes and want it to be automatically reaped
 	if (sigaction(SIGCHLD, &act, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot ignore  SIGCHLD: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot ignore  SIGCHLD: %m\n", getpid());
 		return -1;
 	}
 	
 	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
 	if (sigaction(SIGPIPE, &act, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot ignore  SIGPIPE: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot ignore  SIGPIPE: %m\n", getpid());
 		return -1;
 	}
 	
@@ -872,7 +872,7 @@ static int increasefdlimit(unsigned int maxClients)
 	
 	if (getrlimit(RLIMIT_NOFILE, &limit) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot get open file descriptor limit - %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot get open file descriptor limit - %m\n", getpid());
 		return -1;
 	}
 	
@@ -896,7 +896,7 @@ static int increasefdlimit(unsigned int maxClients)
 	
 	if (setrlimit(RLIMIT_NOFILE, &limit) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot set open file descriptor limit - %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot set open file descriptor limit - %m\n", getpid());
 		return -1;
 	}
 	
@@ -913,7 +913,7 @@ static int open_dir(const char* directory)
 	
 	if (dirfd < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot open content directory: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot open content directory: %m\n", getpid());
 		return -1;
 	}
 	
@@ -922,7 +922,7 @@ static int open_dir(const char* directory)
 	
 	if (fstat(dirfd, &statbuf) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot get information about content directory: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot get information about content directory: %m\n", getpid());
 		return -1;
 	}
 	
@@ -953,7 +953,7 @@ static int open_socket(unsigned short port)
 	
 	if (sockfd < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot create socket: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot create socket: %m\n", getpid());
 		return -1;
 	}
 	
@@ -962,7 +962,7 @@ static int open_socket(unsigned short port)
 	
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot enable address reuse on socket: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot enable address reuse on socket: %m\n", getpid());
 		close(sockfd);
 		return -1;
 	}
@@ -970,7 +970,7 @@ static int open_socket(unsigned short port)
 	// Allow for port reuse
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot enable port reuse on socket: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot enable port reuse on socket: %m\n", getpid());
 		close(sockfd);
 		return -1;
 	}
@@ -988,7 +988,7 @@ static int open_socket(unsigned short port)
 	
 	if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot bind address to socket: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot bind address to socket: %m\n", getpid());
 		close(sockfd);
 		return -1;
 	}
@@ -996,7 +996,7 @@ static int open_socket(unsigned short port)
 	// Set up socket to listen
 	if (listen(sockfd, 256) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot listen on socket: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot listen on socket: %m\n", getpid());
 		close(sockfd);
 		return -1;
 	}
@@ -1017,7 +1017,7 @@ static int open_sigfd()
 	
 	if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot block signals: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot block signals: %m\n", getpid());
 		return -1;
 	}
 	
@@ -1026,7 +1026,7 @@ static int open_sigfd()
 	
 	if (sigfd < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot open signalfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot open signalfd: %m\n", getpid());
 		return -1;
 	}
 	
@@ -1043,7 +1043,7 @@ static int open_timerfd(time_t interval)
 	
 	if (timerfd < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot open timerfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot open timerfd: %m\n", getpid());
 		return -1;
 	}
 	
@@ -1063,7 +1063,7 @@ static int open_timerfd(time_t interval)
 	
 	if (timerfd_settime(timerfd, 0, &timer, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot set timerfd: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Cannot set timerfd: %m\n", getpid());
 		return -1;
 	}
 	
@@ -1165,7 +1165,7 @@ void server_process(struct server_params_t* params)
 	
 	if (server == NULL)
 	{
-		fprintf(stderr, "%i - Error: Could not allocate memory for server state: %s\n", getpid(), strerror(errno));
+		fprintf(stderr, "%i - Error: Could not allocate memory for server state: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
 	
