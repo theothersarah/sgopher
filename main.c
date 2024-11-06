@@ -375,6 +375,12 @@ int main(int argc, char* argv[])
 	
 		if (pid == 0) // Worker
 		{
+			// Close pidfds
+			for (unsigned int j = 0; j <= i; j++)
+			{
+				close(supervisor->workers[j].pidfd);
+			}
+			
 			// No point keeping these around in the worker process
 			free(supervisor->workers);
 			free(supervisor);
