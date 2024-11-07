@@ -1,3 +1,6 @@
+// For mempcpy
+#define _GNU_SOURCE
+
 // Argument handling
 #include <argp.h>
 
@@ -20,10 +23,10 @@
 // sscanf, printf, fprintf
 #include <stdio.h>
 
-// malloc, free, on_exit, exit
+// on_exit, exit
 #include <stdlib.h>
 
-// strlen
+// strlen, mempcpy
 #include <string.h>
 
 // socket, connect
@@ -32,16 +35,13 @@
 // timerfd API
 #include <sys/timerfd.h>
 
-// writev
-#include <sys/uio.h>
-
 // wait
 #include <sys/wait.h>
 
-// fork, read, close
+// fork, write, read, close
 #include <unistd.h>
 
-// shared memory allocation functions
+// scalloc, sfree
 #include "smalloc.h"
 
 // *********************************************************************
@@ -164,48 +164,24 @@ static void cleanup_smalloc(int code, void* arg)
 	sfree(arg);
 }
 
-static void cleanup_malloc(int code, void* arg)
-{
-	free(arg);
-}
-
 // *********************************************************************
 // Task for worker processes
 // *********************************************************************
 __attribute__((noreturn)) static void worker_process(unsigned int id, struct results_t* results, struct args_t* args)
 {
-	// Allocate memory for the receive buffer
+	// Receive buffer
 	const size_t buf_len = args->buffersize;
+	char buf[buf_len];
 	
-	void* buf = malloc(buf_len);
+	// Prepare request
+	size_t req_strlen = strlen(args->request);
+	size_t req_len = req_strlen + 2;
+	char req[req_len];
 	
-	if (buf == NULL)
-	{
-		fprintf(stderr, "Error: Worker #%u cannot allocate receive buffer: %m\n", id);
-		exit(EXIT_FAILURE);
-	}
-	
-	on_exit(cleanup_malloc, buf);
-	
-	// Prepare request vector which concatenates CRLF onto the end of the supplied string
-	char* requestEnd = "\r\n";
-	
-	struct iovec request[] =
-	{
-		{
-			.iov_base = args->request,
-			.iov_len = strlen(args->request)
-		},
-		{
-			.iov_base = requestEnd,
-			.iov_len = strlen(requestEnd)
-		}
-	};
-	
-	ssize_t requestSize = (ssize_t)(request[0].iov_len + request[1].iov_len);
+	mempcpy(mempcpy(req, args->request, req_strlen), "\r\n", 2);
 	
 	// Set up socket address
-	struct sockaddr_in addr = 
+	struct sockaddr_in addr =
 	{
 		.sin_family = AF_INET,
 		.sin_port = htons(args->port),
@@ -218,6 +194,14 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	inet_pton(AF_INET, args->address, &addr.sin_addr.s_addr);
 	
 	// Set up timerfd, which is used to figure out when the test needs to stop
+	int timerfd = timerfd_create(CLOCK_REALTIME, 0);
+	
+	if (timerfd < 0)
+	{
+		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %m\n", id);
+		exit(EXIT_FAILURE);
+	}
+	
 	struct itimerspec timer =
 	{
 		.it_interval =
@@ -230,14 +214,6 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 			.tv_sec = args->duration
 		}
 	};
-	
-	int timerfd = timerfd_create(CLOCK_REALTIME, 0);
-	
-	if (timerfd < 0)
-	{
-		fprintf(stderr, "Error: Worker #%u cannot create timerfd: %m\n", id);
-		exit(EXIT_FAILURE);
-	}
 	
 	if (timerfd_settime(timerfd, 0, &timer, NULL) < 0)
 	{
@@ -328,7 +304,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 			if (poll_list[1].revents & POLLOUT)
 			{
 				// Send the request message
-				ssize_t n = writev(sockfd, request, 2);
+				ssize_t n = write(sockfd, req, req_len);
 				
 				if (n < 0)
 				{
@@ -337,7 +313,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 					close(timerfd);
 					exit(EXIT_FAILURE);
 				}
-				else if (n != requestSize)
+				else if (n != (ssize_t)req_len)
 				{
 					// The request should be small enough to send the full string in one go so something is wrong if not
 					fprintf(stderr, "Error: Worker #%u cannot write full request string\n", id);
@@ -429,10 +405,10 @@ int main(int argc, char* argv[])
 		.timeout = 1000,
 		.numWorkers = 1
 	};
-
+	
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
-
+	
 	// Report argument values
 	fprintf(stderr, "Address: %s\n", args.address);
 	fprintf(stderr, "Buffer size:: %u bytes\n", args.buffersize);
@@ -522,7 +498,7 @@ int main(int argc, char* argv[])
 				}
 				
 				workers[i].status = status;
-
+				
 				break;
 			}
 		}
@@ -547,11 +523,11 @@ int main(int argc, char* argv[])
 			results.successful += workers[i].results.successful;
 			results.timeout += workers[i].results.timeout;
 			results.mismatch += workers[i].results.mismatch;
-
+	
 			successes++;
 		}
 	}
-
+	
 	// Report count of successes
 	fprintf(stderr, "%u process(es) exited successfully\n", successes);
 	
@@ -560,7 +536,7 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "Because no processes exited successfully, a result cannot be calculated\n");
 		exit(EXIT_FAILURE);
 	}
-
+	
 	// Do the final calculation and report the final results
 	printf("Number of attempts: %" PRIu64 "\n", results.total);
 	printf("Rate of attempts: %" PRIu64 " per second\n", results.total / args.duration);
