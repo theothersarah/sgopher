@@ -77,7 +77,7 @@ static void snbuffer_flush(struct snbuffer_t* snbuffer)
 		
 		if (n < 0)
 		{
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			if (errno == EAGAIN)
 			{
 				// If the FD is non-blocking and would block, poll it before trying again
 				struct pollfd fds =

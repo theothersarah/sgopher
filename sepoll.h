@@ -17,7 +17,7 @@ union sepoll_arg_t
 } __attribute__((__transparent_union__));
 
 // Lifecycle management - creation, resizing, and destruction
-struct sepoll_t* sepoll_create(int size);
+struct sepoll_t* sepoll_create(int size, int flags);
 int sepoll_resize(struct sepoll_t* loop, int size);
 void sepoll_destroy(struct sepoll_t* loop);
 
@@ -29,6 +29,5 @@ int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(uint32_t
 int sepoll_remove(struct sepoll_t* loop, int fd);
 
 // Event loop management
-int sepoll_enter(struct sepoll_t* loop);
+int sepoll_enter(struct sepoll_t* loop, int timeout, void (*function)(int, void*), void* userdata);
 void sepoll_exit(struct sepoll_t* loop);
-int sepoll_once(struct sepoll_t* loop, int timeout);

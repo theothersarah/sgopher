@@ -178,7 +178,7 @@ static void sigfd_event(uint32_t events, union sepoll_arg_t userdata1, union sep
 		
 		if (read(supervisor->sigfd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
 		{
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			if (errno == EAGAIN)
 			{
 				break;
 			}
@@ -444,7 +444,7 @@ int main(int argc, char* argv[])
 	}
 	
 	// Create event loop with enough room for responses from each worker and the signalfd in one loop
-	supervisor->loop = sepoll_create((int)supervisor->numWorkers + 1);
+	supervisor->loop = sepoll_create((int)supervisor->numWorkers + 1, 0);
 	
 	if (supervisor->loop == NULL)
 	{
@@ -463,7 +463,7 @@ int main(int argc, char* argv[])
 	}
 	
 	// Event loop doesn't exit until all children exit
-	sepoll_enter(supervisor->loop);
+	sepoll_enter(supervisor->loop, -1, NULL, NULL);
 	
 	fprintf(stderr, "S - All workers exited\n");
 	

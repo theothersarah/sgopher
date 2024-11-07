@@ -359,7 +359,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 					if (n < 0)
 					{
 						// If it would block then that's okay, but halt on any other error
-						if (errno == EAGAIN || errno == EWOULDBLOCK)
+						if (errno == EAGAIN)
 						{
 							break;
 						}

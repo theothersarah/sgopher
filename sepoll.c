@@ -1,6 +1,9 @@
 // for tdestroy
 #define _GNU_SOURCE
 
+// errno
+#include <errno.h>
+
 // tsearch, tdelete, tfind, tdestroy
 #include <search.h>
 
@@ -109,7 +112,7 @@ static struct sepoll_callback_t* sepoll_find_fd(struct sepoll_t* loop, int fd)
 // simultaneously.
 // *********************************************************************
 
-struct sepoll_t* sepoll_create(int size)
+struct sepoll_t* sepoll_create(int size, int flags)
 {
 	// Allocate memory for opaque structure
 	struct sepoll_t* loop = malloc(sizeof(struct sepoll_t));
@@ -129,7 +132,7 @@ struct sepoll_t* sepoll_create(int size)
 	}
 	
 	// Create the epoll fd with the almost-always desirable CLOEXEC flag
-	loop->epollfd = epoll_create1(EPOLL_CLOEXEC);
+	loop->epollfd = epoll_create1(flags);
 	
 	if (loop->epollfd < 0)
 	{
@@ -152,11 +155,13 @@ int sepoll_resize(struct sepoll_t* loop, int size)
 {
 	if (loop == NULL)
 	{
+		errno = EINVAL;
 		return -1;
 	}
 	
 	if (size <= 0)
 	{
+		errno = EINVAL;
 		return -1;
 	}
 	
@@ -232,9 +237,16 @@ int sepoll_add(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(
 	// If it can't be added or something with this file descriptor already exists on it, fail
 	struct sepoll_callback_t** entry = tsearch(callback, &loop->callbacks_tree, compare_callback_fd);
 	
-	if (entry == NULL || *entry != callback)
+	if (entry == NULL)
 	{
 		free(callback);
+		errno = ENOMEM;
+		return -1;
+	}
+	else if (*entry != callback)
+	{
+		free(callback);
+		errno = EEXIST;
 		return -1;
 	}
 	
@@ -262,6 +274,7 @@ int sepoll_mod(struct sepoll_t* loop, int fd, uint32_t events, void (*function)(
 	
 	if (callback == NULL)
 	{
+		errno = EBADF;
 		return -1;
 	}
 	
@@ -290,6 +303,7 @@ int sepoll_mod_events(struct sepoll_t* loop, int fd, uint32_t events)
 	
 	if (callback == NULL)
 	{
+		errno = EBADF;
 		return -1;
 	}
 	
@@ -309,6 +323,7 @@ int sepoll_mod_callback(struct sepoll_t* loop, int fd, void (*function)(uint32_t
 	
 	if (callback == NULL)
 	{
+		errno = EBADF;
 		return -1;
 	}
 	
@@ -327,6 +342,7 @@ int sepoll_remove(struct sepoll_t* loop, int fd)
 	
 	if (callback == NULL)
 	{
+		errno = EBADF;
 		return -1;
 	}
 	
@@ -345,72 +361,69 @@ int sepoll_remove(struct sepoll_t* loop, int fd)
 // Functions for entering the event loop
 // *********************************************************************
 
-// One iteration of the event loop, used by sepoll_enter and sepoll_once
-static inline int sepoll_iter(struct sepoll_t* loop, int timeout)
-{
-	// Wait on epoll events or a timeout
-	int n = epoll_wait(loop->epollfd, loop->epoll_events, loop->epoll_events_size, timeout);
-	
-	if (n < 0)
-	{
-		return -1;
-	}
-	
-	// Iterate over returned events and call the callback functions
-	for (int i = 0; i < n; i++)
-	{
-		struct sepoll_callback_t* callback = loop->epoll_events[i].data.ptr;
-		
-		if (callback->function != NULL)
-		{
-			callback->function(loop->epoll_events[i].events, callback->userdata1, callback->userdata2);
-		}
-	}
-	
-	// Iterate through the garbage collection list and free everything in it
-	struct sepoll_callback_t* callback = LIST_FIRST(&loop->callbacks_gc_list);
-	
-	while (callback != NULL)
-	{
-		struct sepoll_callback_t* next = LIST_NEXT(callback, entry);
-		
-		LIST_REMOVE(callback, entry);
-		
-		free(callback);
-		
-		callback = next;
-	}
-	
-	return n;
-}
-
 // Enter the event loop until sepoll_exit is called within a callback function
-int sepoll_enter(struct sepoll_t* loop)
+int sepoll_enter(struct sepoll_t* loop, int timeout, void (*function)(int, void*), void* userdata)
 {
+	int retval = 0;
+	
 	loop->run = true;
 	
-	do
+	while (loop->run)
 	{
-		int retval = sepoll_iter(loop, -1);
+		// Wait on epoll events or a timeout
+		int n = epoll_wait(loop->epollfd, loop->epoll_events, loop->epoll_events_size, timeout);
 		
-		if (retval < 0)
+		if (n > 0)
 		{
-			return retval;
+			// Iterate over returned events and call the callback functions
+			for (int i = 0; i < n; i++)
+			{
+				struct sepoll_callback_t* callback = loop->epoll_events[i].data.ptr;
+				
+				if (callback->function != NULL)
+				{
+					callback->function(loop->epoll_events[i].events, callback->userdata1, callback->userdata2);
+				}
+			}
+		}
+		
+		// Execute callback function if one was provided
+		if (function != NULL)
+		{
+			function(n, userdata);
+		}
+		else if (n == 0)
+		{
+			// Timeout occurred without a provided callback function
+			loop->run = false;
+		}
+		else if (n < 0)
+		{
+			// Error occurred without a provided callback function
+			retval = -1;
+			loop->run = false;
+		}
+		
+		// Iterate through the garbage collection list and free everything in it
+		struct sepoll_callback_t* callback = LIST_FIRST(&loop->callbacks_gc_list);
+		
+		while (callback != NULL)
+		{
+			struct sepoll_callback_t* next = LIST_NEXT(callback, entry);
+			
+			LIST_REMOVE(callback, entry);
+			
+			free(callback);
+			
+			callback = next;
 		}
 	}
-	while (loop->run);
 	
-	return 0;
+	return retval;
 }
 
 // Exit the event loop
 void sepoll_exit(struct sepoll_t* loop)
 {
 	loop->run = false;
-}
-
-// Do one iteration of the event loop
-int sepoll_once(struct sepoll_t* loop, int timeout)
-{
-	return sepoll_iter(loop, timeout);
 }

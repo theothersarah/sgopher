@@ -225,7 +225,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			
 			if (count < 0)
 			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				if (errno == EAGAIN)
 				{
 					break;
 				}
@@ -603,7 +603,7 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			
 			if (n < 0)
 			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				if (errno == EAGAIN)
 				{
 					break;
 				}
@@ -670,7 +670,7 @@ static void server_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 			
 			if (fd < 0)
 			{
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				if (errno == EAGAIN)
 				{
 					break;
 				}
@@ -744,7 +744,7 @@ static void server_signal(uint32_t events, union sepoll_arg_t userdata1, union s
 		
 		if (read(server->sigfd, &siginfo, sizeof(struct signalfd_siginfo)) != sizeof(struct signalfd_siginfo))
 		{
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			if (errno == EAGAIN)
 			{
 				break;
 			}
@@ -1217,7 +1217,7 @@ void server_process(struct server_params_t* params)
 	
 	// Set up epoll
 	// Strictly speaking it doesn't need to be this big but it lets it handle an event from each client plus core things in one loop
-	server->loop = sepoll_create((int)params->maxClients + 3);
+	server->loop = sepoll_create((int)params->maxClients + 3, EPOLL_CLOEXEC);
 	
 	if (server->loop == NULL)
 	{
@@ -1232,7 +1232,7 @@ void server_process(struct server_params_t* params)
 	// Enter event loop
 	fprintf(stderr, "%i - Successfully started\n", getpid());
 	
-	sepoll_enter(server->loop);
+	sepoll_enter(server->loop, -1, NULL, NULL);
 	
 	fprintf(stderr, "%i - Exiting\n", getpid());
 	
