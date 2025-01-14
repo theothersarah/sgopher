@@ -92,7 +92,7 @@ const char* argp_program_bug_address = "<contact@sarahwatt.ca>";
 static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 {
 	struct args_t* args = state->input;
-
+	
 	switch (key)
 	{
 	case KEY_DIRECTORY:
@@ -286,7 +286,7 @@ int main(int argc, char* argv[])
 		.timeout = 10,
 		.numWorkers = 1
 	};
-
+	
 	// Parse arguments
 	argp_parse(&argp_parser, argc, argv, 0, 0, &args);
 	
@@ -372,7 +372,7 @@ int main(int argc, char* argv[])
 		
 		// This custom fork returns both a pid and a pidfd to the parent
 		pid_t pid = sfork(&pidfd, 0);
-	
+		
 		if (pid == 0) // Worker
 		{
 			// Close pidfds
@@ -422,7 +422,7 @@ int main(int argc, char* argv[])
 	{
 		fprintf(stderr, "S - All workers spawned\n");
 	}
-
+	
 	// Set up signals and the signalfd
 	sigset_t mask;
 	

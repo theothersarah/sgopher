@@ -4,16 +4,10 @@
 // opendir, readdir
 #include <dirent.h>
 
-// errno
-#include <errno.h>
-
-// poll
-#include <poll.h>
-
-// snprintf, fprintf
+// fprintf
 #include <stdio.h>
 
-// exit, getenv, calloc, reallocarray, qsort, bsearch
+// getenv, calloc, reallocarray, qsort, bsearch, exit
 #include <stdlib.h>
 
 // strdupa, strlen, strrchr, strcmp, memrchr, strcasestr
@@ -22,135 +16,18 @@
 // stat
 #include <sys/stat.h>
 
-// write, getpid
+// getpid
 #include <unistd.h>
+
+// write buffering functions
+#include "sbuffer.h"
 
 // Starting size of filename string list
 #define NUM_FILENAMES 256
 
-// Buffering for several snprintf calls to limit the number of writes performed
+// Buffer length and autoflush threshold
 #define BUFFER_LENGTH 65536
-#define BUFFER_BUFFER 4096
-
-struct snbuffer_t
-{
-	// file descriptor to flush the buffer to
-	int fd;
-	
-	// Base and length of buffer
-	char* base;
-	size_t len;
-	
-	// These are the current end position and remaining size of the buffer
-	// They are passed to snprintf and updated by snbuffer_push
-	char* pos;
-	size_t size;
-};
-
-static inline void snbuffer_setup(struct snbuffer_t* snbuffer, int fd, char* base, size_t len)
-{
-	snbuffer->fd = fd;
-	
-	snbuffer->base = base;
-	snbuffer->len = len;
-	
-	snbuffer->pos = base;
-	snbuffer->size = len;
-}
-
-static void snbuffer_flush(struct snbuffer_t* snbuffer)
-{
-	// Figure out if there's anything in the buffer
-	size_t count = (size_t)(snbuffer->pos - snbuffer->base);
-	
-	if (count == 0)
-	{
-		return;
-	}
-	
-	// Potentially requires multiple writes especially if the FD is a socket, pipe, etc.
-	char* src = snbuffer->base;
-	
-	do
-	{
-		ssize_t n = write(snbuffer->fd, src, count);
-		
-		if (n < 0)
-		{
-			if (errno == EAGAIN)
-			{
-				// If the FD is non-blocking and would block, poll it before trying again
-				struct pollfd fds =
-				{
-					.fd = snbuffer->fd,
-					.events = POLLOUT
-				};
-				
-				// Infinite timeout is acceptable because the server will kill the process if it takes too long
-				if (poll(&fds, 1, -1) < 0)
-				{
-					fprintf(stderr, "%i (gopherlist) - Error: Cannot poll: %m\n", getpid());
-					exit(EXIT_FAILURE);
-				}
-			}
-			else
-			{
-				fprintf(stderr, "%i (gopherlist) - Error: Cannot write: %m\n", getpid());
-				exit(EXIT_FAILURE);
-			}
-		}
-		
-		count -= (size_t)n;
-		src += n;
-	}
-	while(count > 0);
-	
-	// Reset buffer
-	snbuffer->pos = snbuffer->base;
-	snbuffer->size = snbuffer->len;
-}
-
-static void snbuffer_push(struct snbuffer_t* snbuffer, size_t leftover, int size)
-{
-	if (size > 0)
-	{
-		// >= is used to take the implied null terminator into account: if size == buf->size, one character is actually cut off in favor of the null
-		if ((size_t)size >= snbuffer->size)
-		{
-			fprintf(stderr, "%i (gopherlist) - Warning: Discarded snprintf result due to size\n", getpid());
-		}
-		else
-		{
-			// Update position and remaining size for next call
-			snbuffer->pos += size;
-			snbuffer->size -= (size_t)size;
-		}
-	}
-	else if (size < 0)
-	{
-		fprintf(stderr, "%i (gopherlist) - Error: Cannot snprintf: %m\n", getpid());
-		exit(EXIT_FAILURE);
-	}
-	
-	// Check if a flush is necessary to free space for the next call
-	if (snbuffer->size < leftover)
-	{
-		snbuffer_flush(snbuffer);
-	}
-}
-
-// List of filenames
-struct filenamelist_t
-{
-	// Array of filenames
-	char** filenames;
-	
-	// Size of array
-	size_t size;
-	
-	// Number of filenames present in array
-	size_t count;
-};
+#define BUFFER_LEFTOVER 4096
 
 // Comparison function for filename list
 static int compare_strings(const void* pa, const void* pb)
@@ -239,18 +116,16 @@ int main()
 	}
 	
 	// Allocate a list of filenames with a starter size that may be expanded later if needed
-	struct filenamelist_t filenamelist =
-	{
-		.filenames = calloc(NUM_FILENAMES, sizeof(char*)),
-		.size = NUM_FILENAMES,
-		.count = 0
-	};
+	char** filenames = calloc(NUM_FILENAMES, sizeof(char*));
 	
-	if (filenamelist.filenames == NULL)
+	if (filenames == NULL)
 	{
 		fprintf(stderr, "%i (gopherlist) - Error: Cannot allocate memory for filename list: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
+	
+	size_t filenames_size = NUM_FILENAMES;
+	size_t filenames_count = 0;
 	
 	// Open a directory stream for the working directory
 	DIR* directory = opendir(".");
@@ -291,14 +166,14 @@ int main()
 		}
 		
 		// Add the filename to the list
-		filenamelist.filenames[filenamelist.count++] = filename;
+		filenames[filenames_count++] = filename;
 		
 		// Resize the filename list if it's full, doubling it in size
-		if (filenamelist.count == filenamelist.size)
+		if (filenames_count == filenames_size)
 		{
-			filenamelist.size *= 2;
+			filenames_size *= 2;
 			
-			void* resized = reallocarray(filenamelist.filenames, filenamelist.size, sizeof(char*));
+			void* resized = reallocarray(filenames, filenames_size, sizeof(char*));
 			
 			if (resized == NULL)
 			{
@@ -306,41 +181,41 @@ int main()
 				exit(EXIT_FAILURE);
 			}
 			
-			filenamelist.filenames = resized;
+			filenames = resized;
 		}
 	}
 	
 	// Sort the list of filenames
-	qsort(filenamelist.filenames, filenamelist.count, sizeof(char*), compare_strings);
+	qsort(filenames, filenames_count, sizeof(char*), compare_strings);
 	
-	// Prepare a buffer for the output to produce a minimum number of writes
-	struct snbuffer_t snbuffer;
+	// Prepare a buffer for the output to reduce the number of writes to socket that are needed
 	char buffer[BUFFER_LENGTH];
+	struct sbuffer_t sbuffer;
 	
-	snbuffer_setup(&snbuffer, STDOUT_FILENO, buffer, BUFFER_LENGTH);
+	sbuffer_init(&sbuffer, STDOUT_FILENO, -1, buffer, BUFFER_LENGTH);
 	
 	// Build header, which includes a "parent directory" link if one can be derived from the selector
-	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iDirectory listing of %s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector));
+	sbuffer_push(&sbuffer, "iDirectory listing of %s:%s%.*s/\r\n", env_hostname, env_port, (int)(last_slash - env_selector), env_selector);
 	
 	if (query_len > 0)
 	{
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "iShowing filenames containing %s\r\n", env_query));
+		sbuffer_push(&sbuffer, "iShowing filenames containing %s\r\n", env_query);
 	}
 	
-	snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\n"));
+	sbuffer_push(&sbuffer, "i\r\n");
 	
 	if (parent_slash != NULL)
 	{
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector) + 1, env_selector, env_hostname, env_port));
+		sbuffer_push(&sbuffer, "1Parent Directory\t%.*s\t%s\t%s\r\n", (int)(parent_slash - env_selector) + 1, env_selector, env_hostname, env_port);
 	}
 	
 	// Counter for valid files
 	unsigned int files_found = 0;
 	
 	// Build list of filenames
-	for (size_t i = 0; i < filenamelist.count; i++)
+	for (size_t i = 0; i < filenames_count; i++)
 	{
-		char* filename = filenamelist.filenames[i];
+		char* filename = filenames[i];
 		
 		// Get the file stats
 		struct stat statbuf;
@@ -406,18 +281,21 @@ int main()
 		files_found++;
 		
 		// Build the menu line
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "%c%s\t%.*s/%s\t%s\t%s\r\n", type, filename, (int)(last_slash - env_selector), env_selector, filename, env_hostname, env_port));
+		sbuffer_push(&sbuffer, "%c%s\t%.*s/%s\t%s\t%s\r\n", type, filename, (int)(last_slash - env_selector), env_selector, filename, env_hostname, env_port);
+		
+		// Check if buffer is full enough to flush
+		sbuffer_checkflush(&sbuffer, BUFFER_LEFTOVER);
 	}
 	
 	// Add the footer and output the buffer
 	if (query_len > 0)
 	{
-		snbuffer_push(&snbuffer, BUFFER_BUFFER, snprintf(snbuffer.pos, snbuffer.size, "i\r\niFound %u files\r\n", files_found));
+		sbuffer_push(&sbuffer, "i\r\niFound %u files\r\n", files_found);
 	}
 	
-	snbuffer_push(&snbuffer, 0, snprintf(snbuffer.pos, snbuffer.size, ".\r\n"));
+	sbuffer_push(&sbuffer, ".\r\n");
 	
-	snbuffer_flush(&snbuffer);
+	sbuffer_flush(&sbuffer);
 	
 	exit(EXIT_SUCCESS);
 }

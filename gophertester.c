@@ -99,7 +99,7 @@ struct args_t
 static error_t argp_parse_options(int key, char* arg, struct argp_state* state)
 {
 	struct args_t* args = state->input;
-
+	
 	switch (key)
 	{
 	case KEY_ADDRESS:
@@ -170,7 +170,7 @@ static void cleanup_smalloc(int code, void* arg)
 __attribute__((noreturn)) static void worker_process(unsigned int id, struct results_t* results, struct args_t* args)
 {
 	// Receive buffer
-	const size_t buf_len = args->buffersize;
+	size_t buf_len = args->buffersize;
 	char buf[buf_len];
 	
 	// Prepare request
@@ -204,11 +204,6 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 	
 	struct itimerspec timer =
 	{
-		.it_interval =
-		{
-			.tv_sec = args->duration
-		},
-		
 		.it_value =
 		{
 			.tv_sec = args->duration
@@ -366,7 +361,7 @@ __attribute__((noreturn)) static void worker_process(unsigned int id, struct res
 							results->successful++;
 						}
 						
-						// 
+						// Exit connection loop because we reached EOF
 						connected = false;
 						
 						break;

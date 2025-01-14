@@ -22,7 +22,7 @@
 // close
 #include <unistd.h>
 
-//
+// sepoll_arg_t
 # include "sepoll.h"
 
 // *********************************************************************
@@ -72,18 +72,7 @@ static int compare_callback_fd(const void* pa, const void* pb)
 	const struct sepoll_callback_t* a = pa;
 	const struct sepoll_callback_t* b = pb;
 	
-	if (a->fd < b->fd)
-	{
-		return -1;
-	}
-	else if (a->fd > b->fd)
-	{
-		return 1;
-	}
-	else
-	{
-		return 0;
-	}
+	return a->fd - b->fd;
 }
 
 static struct sepoll_callback_t* sepoll_find_fd(struct sepoll_t* loop, int fd)

@@ -3,7 +3,7 @@ Gopher server for Linux
 
 sgopher is my personal attempt at a Gopher protocol server that is capable of a high rate of throughput for many concurrent users. The package also contains gophertester, a benchmarker for Gopher servers that I made for testing purposes, and gopherlist, a CGI-like program that produces a directory listing.
 
-Requires Linux kernel 5.5 or greater and glibc.
+I write for and test on Debian 12, which has Linux kernel version 6.1 and glibc 2.36. I believe the features sgopher uses requires at least Linux kernel version 5.5, and it uses glibc-specific features although I don't have an idea of what minimum version is necessary.
 
 ## Configuration
 sgopher is configured entirely with command line options. It accepts the following options:
@@ -20,7 +20,7 @@ sgopher currently contains no provisions for access logging or throttling. Error
 
 The default maximum number of clients per process is set possibly higher than the number of concurrent Gopher users across the whole world. The number is fairly arbitrary; no significant resources are consumed if this number is higher than necessary - only 12 bytes per potential client as part of the event system. Additionally at startup, sgopher worker processes request an increase to the maximum number of open file descriptors if necessary to accommodate the maximum number of clients; it requires potentially up to 4 additional file descriptors per connected client.
 
-When SIGTERM is sent to sgopher's main process, it will send SIGTERM to each of its children and wait for them to exit before exiting itself. This is intended to be the correct way to gracefully terminate sgopher. However, terminating it via SIGKILL or SIGINT via ctrl+c in the console does not cause any issues.
+When SIGTERM is sent to sgopher's main process, it will send SIGTERM to each of its children and wait for them to exit before exiting itself. This is intended to be the correct way to gracefully terminate sgopher. However, terminating it via SIGKILL or SIGINT via ctrl+c in the console does not appear to cause any issues.
 
 ## Standards Support
 sgopher supports the Gopher protocol as written in RFC 1436 with a small number of exceptions.
@@ -39,8 +39,6 @@ CGI programs are executed with the following file descriptors:
 0 (stdin): /dev/null  
 1 (stdout): client socket. Technically is read/write, but a well-behaved client shouldn't be sending anything.  
 2 (stderr): The stderr pipe of the server process, for error reporting. Will show up in the console or wherever else the server's stderr is going.
-
-Additionally, there will be an open file descriptor referring to the executable file itself. It will have whatever number it had when the server opened it for execution. This is present due to a limitation of the fexecve function - if the executable file is a script with a shebang line, it will only execute correctly if the file is NOT marked CLOEXEC, so it persists across the fexecve call. It is opened read-only so you can't accidentally overwrite it, though. I did not consider this to be enough of a problem to justify examining the file for the shebang.
 
 The following environmental variables are provided, mimicking some aspects of the CGI standard:
 

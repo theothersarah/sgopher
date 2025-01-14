@@ -1,10 +1,10 @@
 CC = gcc
-CFLAGS = -D_FORTIFY_SOURCE=2 -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wconversion -O3
+CFLAGS = -D_FORTIFY_SOURCE=3 -Werror -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wconversion -O3
 LDFLAGS = 
 
 sgopher_OBJFILES = main.o server.o sepoll.o sfork.o
 gophertester_OBJFILES = gophertester.o smalloc.o
-gopherlist_OBJFILES = gopherlist.o
+gopherlist_OBJFILES = gopherlist.o sbuffer.o
 
 OBJFILES = $(sgopher_OBJFILES) $(gophertester_OBJFILES) $(gopherlist_OBJFILES)
 TARGETS = sgopher gophertester gopherlist

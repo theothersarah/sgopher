@@ -54,7 +54,7 @@
 // time
 #include <time.h>
 
-// read, close, getpid, dup2, dup, fexecve, fchdir
+// read, close, getpid, dup2, execve, fchdir, _exit
 #include <unistd.h>
 
 // event loop functions
@@ -70,15 +70,17 @@
 // Constants
 // *********************************************************************
 
-// File descriptors needed for the server: 3 standard, 5 for server core functions, 1 for incoming user, 1 for dup in CGI process
-#define FDS_SERVER (3 + 5 + 1 + 1)
+// File descriptors needed for the server: 3 standard, 5 for server core functions, 1 for incoming user
+#define FDS_SERVER (3 + 5 + 1)
 
 // File descriptors needed per client
 #define FDS_CLIENT 4
 
 // Maximum incoming request size
-// Equal to twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF
-#define MAX_REQUEST_SIZE (2*255 + 2)
+// Equal to twice the 255 bytes mandated by the gopher protocol plus 2 for the CRLF and 1 for a tab
+// This allows a full request to potentially contain a 255 character selector and 255 character query,
+// although either can be longer than 255 characters as long as this maximum is respected
+#define MAX_REQUEST_SIZE (2*255 + 2 + 1)
 
 // Maximum filename size for a request that has been processed into a null-terminated relative path
 // -2 because CRLF is cut off and +4 to add ./ to the start, a null to the end, and possibly a trailing / for a directory
@@ -136,7 +138,7 @@ struct server_t
 	int socket;
 	int sigfd;
 	int timerfd;
-
+	
 	// Event loop
 	struct sepoll_t* loop;
 	
@@ -188,7 +190,7 @@ static inline void pidfd_kill_client(struct server_t* server, struct client_t* c
 {
 	if (pidfd_send_signal(client->pidfd, SIGKILL, NULL, 0) < 0)
 	{
-		// This shouldn't fail undless something is deeply wrong
+		// This shouldn't fail unless something is deeply wrong
 		// In the event that it does, boot the client and pray for the best
 		fprintf(stderr, "%i - Error: Cannot send kill signal via pidfd: %m\n", getpid());
 		
@@ -443,15 +445,17 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 		if (statbuf.st_mode & S_IXOTH)
 		{
 			// This custom fork returns both a pid and pidfd with one syscall
-			pid_t pid = sfork(&client->pidfd, CLONE_CLEAR_SIGHAND);
+			pid_t pid = sfork(&client->pidfd, CLONE_CLEAR_SIGHAND | CLONE_VFORK);
 			
 			if (pid == 0)
 			{
 				// First argument for fexecve
 				char* command;
 				
+				int dirfd = client->dirfd;
+				
 				// If we don't already have a file descriptor for the containing directory, we need to figure one out from the filename
-				if (client->dirfd < 0)
+				if (dirfd < 0)
 				{
 					// Buffer for pathname
 					char pathname[MAX_FILENAME_SIZE];
@@ -461,9 +465,9 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 					
 					if (filename_slash == NULL)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot find slash in filename %s\n", getpid(), filename);
+						dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot find slash in filename %s\n", getpid(), filename);
 						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-						exit(EXIT_FAILURE);
+						_exit(EXIT_FAILURE);
 					}
 					
 					// Extract everything up to the last slash as a string and make it into a null-terminated string
@@ -471,13 +475,13 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 					*str_end = '\0';
 					
 					// Try to open the path
-					client->dirfd = openat(server->directory, pathname, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
+					dirfd = openat(server->directory, pathname, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 					
-					if (client->dirfd < 0)
+					if (dirfd < 0)
 					{
-						fprintf(stderr, "%i (CGI process) - Error: Cannot open %s: %m\n", getpid(), pathname);
+						dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot openat %s: %m\n", getpid(), pathname);
 						dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-						exit(EXIT_FAILURE);
+						_exit(EXIT_FAILURE);
 					}
 					
 					// Command is whatever is after the slash
@@ -490,11 +494,11 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				}
 				
 				// Change working directory to the location of the executable file
-				if (fchdir(client->dirfd) < 0)
+				if (fchdir(dirfd) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot fchdir: %m\n", getpid());
+					dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot fchdir: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-					exit(EXIT_FAILURE);
+					_exit(EXIT_FAILURE);
 				}
 				
 				// Reset signal mask
@@ -504,17 +508,17 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 				
 				if (sigprocmask(SIG_SETMASK, &mask, NULL) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot reset signal mask: %m\n", getpid());
+					dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot reset signal mask: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-					exit(EXIT_FAILURE);
+					_exit(EXIT_FAILURE);
 				}
 				
 				// Replace the fork's stdout FD with the socket FD
 				if (dup2(client->socket, STDOUT_FILENO) < 0)
 				{
-					fprintf(stderr, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %m\n", getpid());
+					dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot dup2 socket over stdout: %m\n", getpid());
 					dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-					exit(EXIT_FAILURE);
+					_exit(EXIT_FAILURE);
 				}
 				
 				// Command line arguments
@@ -550,13 +554,12 @@ static void client_socket(uint32_t events, union sepoll_arg_t userdata1, union s
 					NULL
 				};
 				
-				// dup here makes a copy of the file descriptor without the CLOEXEC flag, which prevents scripts from properly executing with fexecve
-				fexecve(dup(client->file), argv, envp);
+				execve(command, argv, envp);
 				
 				// This is only reached if there was a problem with fexecve
-				fprintf(stderr, "%i (CGI process) - Error: Cannot execute file %s: %m\n", getpid(), filename);
+				dprintf(STDERR_FILENO, "%i (CGI process) - Error: Cannot execute file %s: %m\n", getpid(), filename);
 				dprintf(client->socket, ERROR_FORMAT, ERROR_INTERNAL);
-				exit(EXIT_FAILURE);
+				_exit(EXIT_FAILURE);
 			}
 			else if (pid < 0)
 			{
@@ -849,14 +852,14 @@ static int setupsignals()
 	// We want to ignore SIGCHLD because we don't care about child exit codes and want it to be automatically reaped
 	if (sigaction(SIGCHLD, &act, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot ignore  SIGCHLD: %m\n", getpid());
+		fprintf(stderr, "%i - Error: Cannot ignore SIGCHLD: %m\n", getpid());
 		return -1;
 	}
 	
 	// The client disconnecting during sendfile can cause SIGPIPE which kills the process, so we don't want that
 	if (sigaction(SIGPIPE, &act, NULL) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot ignore  SIGPIPE: %m\n", getpid());
+		fprintf(stderr, "%i - Error: Cannot ignore SIGPIPE: %m\n", getpid());
 		return -1;
 	}
 	
@@ -866,29 +869,24 @@ static int setupsignals()
 // *********************************************************************
 // Set the process open fd limit to what is needed given user limit
 // *********************************************************************
-static int increasefdlimit(unsigned int maxClients)
+static int increasefdlimit(rlim_t inc)
 {
 	struct rlimit limit;
 	
 	if (getrlimit(RLIMIT_NOFILE, &limit) < 0)
 	{
-		fprintf(stderr, "%i - Error: Cannot get open file descriptor limit - %m\n", getpid());
+		fprintf(stderr, "%i - Error: Cannot get open file descriptor limits - %m\n", getpid());
 		return -1;
 	}
 	
-	rlim_t cur = limit.rlim_cur;
-	rlim_t max = limit.rlim_max;
-	
-	rlim_t inc = FDS_SERVER + maxClients * FDS_CLIENT;
-	
-	if (inc < cur)
+	if (inc < limit.rlim_cur)
 	{
 		return 0;
 	}
 	
-	if (inc > max)
+	if (inc > limit.rlim_max)
 	{
-		fprintf(stderr, "%i - Error: Process maximum FD limit too low to occomodate desired maximum number of clients\n", getpid());
+		fprintf(stderr, "%i - Error: Requested maximum number of open file descriptors higher than per-process hard limit\n", getpid());
 		return -1;
 	}
 	
@@ -901,46 +899,6 @@ static int increasefdlimit(unsigned int maxClients)
 	}
 	
 	return 0;
-}
-
-// *********************************************************************
-// Open the content directory
-// *********************************************************************
-static int open_dir(const char* directory)
-{
-	// Open content directory
-	int dirfd = open(directory, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
-	
-	if (dirfd < 0)
-	{
-		fprintf(stderr, "%i - Error: Cannot open content directory: %m\n", getpid());
-		return -1;
-	}
-	
-	// Get information for content directory
-	struct stat statbuf;
-	
-	if (fstat(dirfd, &statbuf) < 0)
-	{
-		fprintf(stderr, "%i - Error: Cannot get information about content directory: %m\n", getpid());
-		return -1;
-	}
-	
-	// Make sure it's world readable
-	if (!(statbuf.st_mode & S_IROTH))
-	{
-		fprintf(stderr, "%i - Error: Content path is not world readable\n", getpid());
-		return -1;
-	}
-	
-	// Make sure it's world executable
-	if (!(statbuf.st_mode & S_IXOTH))
-	{
-		fprintf(stderr, "%i - Error: Content path is not world executable\n", getpid());
-		return -1;
-	}
-	
-	return dirfd;
 }
 
 // *********************************************************************
@@ -1054,7 +1012,6 @@ static int open_timerfd(time_t interval)
 		{
 			.tv_sec = interval
 		},
-		
 		.it_value =
 		{
 			.tv_sec = interval
@@ -1155,7 +1112,7 @@ void server_process(struct server_params_t* params)
 	}
 	
 	// Increase open file descriptor limit if needed
-	if (increasefdlimit(params->maxClients) < 0)
+	if (increasefdlimit(FDS_SERVER + params->maxClients * FDS_CLIENT) < 0)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -1184,10 +1141,11 @@ void server_process(struct server_params_t* params)
 	on_exit(server_cleanup, server);
 	
 	// Open content directory
-	server->directory = open_dir(params->directory);
+	server->directory = open(params->directory, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_PATH);
 	
 	if (server->directory < 0)
 	{
+		fprintf(stderr, "%i - Error: Could not open content directory: %m\n", getpid());
 		exit(EXIT_FAILURE);
 	}
 	

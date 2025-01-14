@@ -24,17 +24,17 @@ void* smalloc(size_t size)
 	}
 	
 	size_t length = sizeof(size_t) + size;
-
+	
 	size_t* ptr = (size_t*)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
+	
 	if (ptr == MAP_FAILED)
 	{
 		return NULL;
 	}
-
+	
 	*ptr = length;
 	ptr++;
-
+	
 	return (void*)ptr;
 }
 
@@ -63,9 +63,9 @@ void sfree(void* ptr)
 	{
 		return;
 	}
-
+	
 	size_t* base = (size_t*)ptr;
 	base--;
-
+	
 	munmap((void*)base, *base);
 }
